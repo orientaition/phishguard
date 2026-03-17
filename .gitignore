@@ -1,0 +1,11 @@
+# 빌드 결과물
+dist/
+ 
+# 의존성
+node_modules/
+ 
+# 환경 설정
+.env
+.DS_Store
+Thumbs.db
+ 

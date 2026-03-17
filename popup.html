@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>PhishGuard AI</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+KR:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { width: 300px; background: #0e0e0e; color: #e8e8e8; font-family: 'JetBrains Mono', monospace; -webkit-font-smoothing: antialiased; }
+
+    .header { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid #222; background: #141414; }
+    .header-left { display: flex; align-items: center; gap: 10px; }
+    .logo { width: 28px; height: 28px; border-radius: 5px; background: rgba(255,60,60,0.12); border: 1px solid rgba(255,60,60,0.3); display: flex; align-items: center; justify-content: center; }
+    .title { font-size: 11px; font-weight: 600; letter-spacing: 0.15em; text-transform: uppercase; color: #f0f0f0; }
+    .subtitle { font-size: 9px; color: #888; font-family: 'Noto Sans KR', sans-serif; margin-top: 2px; }
+    .badge { display: flex; align-items: center; gap: 5px; padding: 3px 8px; border-radius: 3px; background: rgba(0,212,106,0.08); border: 1px solid rgba(0,212,106,0.3); }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: #00d46a; animation: pulse 2s infinite; }
+    .badge-txt { font-size: 9px; color: #00d46a; letter-spacing: 0.15em; text-transform: uppercase; }
+
+    /* 탭 */
+    .tabs { display: flex; border-bottom: 1px solid #222; background: #0e0e0e; }
+    .tab { flex: 1; padding: 9px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; background: none; border: none; cursor: pointer; color: #666; font-family: 'JetBrains Mono', monospace; border-bottom: 2px solid transparent; margin-bottom: -1px; transition: all 0.15s; }
+    .tab.active { color: #f0f0f0; border-bottom-color: #ff3c3c; background: #141414; }
+    .tab:hover:not(.active) { color: #aaa; }
+
+    .tab-content { display: none; padding: 14px; flex-direction: column; gap: 14px; }
+    .tab-content.active { display: flex; }
+
+    /* 섹션 라벨 */
+    .section-label { font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: #666; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .section-label::after { content: ''; flex: 1; height: 1px; background: #222; }
+
+    /* 통계 */
+    .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    .stat { padding: 10px; border-radius: 4px; text-align: center; border: 1px solid; }
+    .stat-val { font-size: 22px; font-weight: 700; display: block; }
+    .stat-lbl { font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 2px; opacity: 0.85; }
+    #card-high   { background: rgba(255,60,60,0.08);   border-color: rgba(255,60,60,0.2);   }
+    #card-medium { background: rgba(255,184,0,0.08);   border-color: rgba(255,184,0,0.2);   }
+    #card-low    { background: rgba(0,212,106,0.08);   border-color: rgba(0,212,106,0.2);   }
+    #card-total  { background: rgba(180,180,180,0.06); border-color: rgba(180,180,180,0.15);}
+    #card-high   .stat-val, #card-high   .stat-lbl { color: #ff5555; }
+    #card-medium .stat-val, #card-medium .stat-lbl { color: #ffc233; }
+    #card-low    .stat-val, #card-low    .stat-lbl { color: #2ee87a; }
+    #card-total  .stat-val, #card-total  .stat-lbl { color: #aaa;    }
+
+    /* 작동 원리 */
+    .steps { display: flex; flex-direction: column; gap: 7px; }
+    .step { display: flex; gap: 10px; }
+    .step-n { font-size: 9px; color: #555; flex-shrink: 0; margin-top: 1px; }
+    .step-t { font-size: 10px; color: #aaa; font-family: 'Noto Sans KR', sans-serif; line-height: 1.5; }
+
+    /* 설정 폼 */
+    .form-label { font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase; color: #888; margin-bottom: 6px; }
+    .input-wrap { position: relative; }
+    .pg-input {
+      width: 100%; padding: 9px 34px 9px 11px;
+      background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 3px;
+      color: #f0f0f0; font-family: 'JetBrains Mono', monospace; font-size: 11px;
+      outline: none; transition: border-color 0.15s;
+    }
+    .pg-input:focus { border-color: #444; }
+    .pg-input::placeholder { color: #444; }
+    .eye-btn { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #666; display: flex; align-items: center; transition: color 0.15s; }
+    .eye-btn:hover { color: #ccc; }
+    .key-status { font-size: 9px; color: #666; font-family: 'Noto Sans KR', sans-serif; margin-top: 6px; }
+    .key-status.ok  { color: #2ee87a; }
+    .key-status.err { color: #ff5555; }
+
+    .btn-row { display: flex; gap: 6px; }
+    .btn-save {
+      flex: 1; padding: 9px; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase;
+      background: rgba(255,60,60,0.1); border: 1px solid rgba(255,60,60,0.35); color: #ff6666;
+      border-radius: 3px; cursor: pointer; font-family: 'JetBrains Mono', monospace; transition: all 0.15s;
+    }
+    .btn-save:hover { background: rgba(255,60,60,0.2); border-color: rgba(255,60,60,0.5); color: #ff8888; }
+    .btn-save.saved { color: #2ee87a; border-color: rgba(0,212,106,0.4); background: rgba(0,212,106,0.08); }
+    .btn-clear {
+      padding: 9px 12px; font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+      background: none; border: 1px solid #2a2a2a; color: #888;
+      border-radius: 3px; cursor: pointer; font-family: 'JetBrains Mono', monospace; transition: all 0.15s;
+    }
+    .btn-clear:hover { border-color: #444; color: #ccc; }
+
+    .byok-note { font-size: 9px; color: #555; font-family: 'Noto Sans KR', sans-serif; line-height: 1.7; padding-top: 10px; border-top: 1px solid #1e1e1e; }
+    .byok-note a { color: rgba(255,100,100,0.7); text-decoration: underline; }
+    .byok-note a:hover { color: #ff8888; }
+
+    /* 푸터 */
+    .footer { padding: 9px 14px; border-top: 1px solid #1e1e1e; display: flex; justify-content: space-between; align-items: center; }
+    .footer-l { font-size: 9px; color: #555; }
+    .btn-reset { background: none; border: 1px solid #222; border-radius: 3px; color: #666; font-size: 9px; padding: 4px 10px; cursor: pointer; font-family: 'JetBrains Mono', monospace; text-transform: uppercase; transition: all 0.15s; }
+    .btn-reset:hover { border-color: #444; color: #aaa; }
+
+    @keyframes pulse { 0%,100%{opacity:0.4;transform:scale(0.85)} 50%{opacity:1;transform:scale(1.15)} }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="header-left">
+      <div class="logo">
+        <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+          <path d="M8 1L1.5 4.5V8c0 3.866 2.91 7 6.5 7s6.5-3.134 6.5-7V4.5L8 1z" stroke="#ff3c3c" stroke-width="1.3" fill="rgba(255,60,60,0.1)"/>
+          <path d="M8 5.5V9.5M8 11v.5" stroke="#ff3c3c" stroke-width="1.6" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div>
+        <div class="title">PhishGuard AI</div>
+        <div class="subtitle">Gmail 스피어피싱 탐지</div>
+      </div>
+    </div>
+    <div class="badge" id="badge">
+      <div class="badge-dot" id="badge-dot"></div>
+      <span class="badge-txt" id="badge-txt">Active</span>
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="status">현황</button>
+    <button class="tab" data-tab="settings">설정</button>
+  </div>
+
+  <div class="tab-content active" id="tab-status">
+    <div>
+      <div class="section-label">분석 통계</div>
+      <div class="stats">
+        <div class="stat" id="card-high"><span class="stat-val" id="s-high">0</span><div class="stat-lbl">위험</div></div>
+        <div class="stat" id="card-medium"><span class="stat-val" id="s-medium">0</span><div class="stat-lbl">주의</div></div>
+        <div class="stat" id="card-low"><span class="stat-val" id="s-low">0</span><div class="stat-lbl">안전</div></div>
+        <div class="stat" id="card-total"><span class="stat-val" id="s-total">0</span><div class="stat-lbl">총 분석</div></div>
+      </div>
+    </div>
+    <div>
+      <div class="section-label">작동 원리</div>
+      <div class="steps">
+        <div class="step"><span class="step-n">01</span><span class="step-t">MutationObserver로 Gmail 이메일 열람 감지</span></div>
+        <div class="step"><span class="step-n">02</span><span class="step-t">발신자 · 제목 · 본문 자동 추출</span></div>
+        <div class="step"><span class="step-n">03</span><span class="step-t">Groq LLaMA 3.3으로 피싱 여부 분석</span></div>
+        <div class="step"><span class="step-n">04</span><span class="step-t">위험도 + 체크리스트 화면에 표시</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="tab-content" id="tab-settings">
+    <div>
+      <div class="form-label">Groq API 키</div>
+      <div class="input-wrap">
+        <input type="password" class="pg-input" id="api-input" placeholder="gsk_..." autocomplete="off" spellcheck="false" />
+        <button type="button" class="eye-btn" id="eye-btn">
+          <svg id="eye-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+        </button>
+      </div>
+      <div class="key-status" id="key-status">키 미설정 · console.groq.com 에서 무료 발급</div>
+    </div>
+    <div class="btn-row">
+      <button type="button" class="btn-save" id="btn-save">[ 저장 ]</button>
+      <button type="button" class="btn-clear" id="btn-clear">초기화</button>
+    </div>
+    <div class="byok-note">
+      BYOK — 키는 chrome.storage.local에만 저장됩니다.<br>
+      외부 서버 전송 없음 · 브라우저 ↔ Groq API 직접 통신<br>
+      <a href="https://console.groq.com" target="_blank">console.groq.com</a>에서 무료 발급
+    </div>
+  </div>
+
+  <div class="footer">
+    <span class="footer-l">v1.0.0 · Groq LLaMA 3.3</span>
+    <button class="btn-reset" id="btn-reset">통계 초기화</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
