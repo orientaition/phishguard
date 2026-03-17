@@ -9,12 +9,6 @@ React + Vite + Tailwind CSS + Chrome Manifest V3
 
 ```
 phishguard/
-├── public/
-│   ├── manifest.json          ← Chrome MV3 설정
-│   └── icons/                 ← 아이콘 (직접 추가)
-│       ├── icon16.png
-│       ├── icon48.png
-│       └── icon128.png
 ├── src/
 │   ├── background.js          ← Service Worker: Gemini API 호출
 │   ├── content.js             ← Gmail DOM 감시 + 분석 패널 주입
@@ -60,8 +54,8 @@ npm run build
 
 ### 5. API 키 설정
 1. Chrome 툴바에서 PhishGuard AI 아이콘 클릭
-2. **설정** 탭 → Gemini API 키 입력 (`AIza...` 형태)
-3. API 키 발급: https://aistudio.google.com/apikey (무료)
+2. **설정** 탭 → Groq API 키 입력 (`gsk_...` 형태)
+3. API 키 발급: [https://console.groq.com/keys] (무료)
 4. **[ 저장 ]** 클릭
 
 ### 6. 사용
