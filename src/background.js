@@ -77,7 +77,7 @@ IMPORTANT:
 
 {
   "riskLevel": "HIGH" 또는 "MEDIUM" 또는 "LOW",
-  "confidence": 0~100 사이 정수,
+  "confidence": 0~100 사이 정수. 이 메일을 신뢰할 수 있는 정도를 나타냅니다. 0에 가까울수록 신뢰 불가(피싱 가능성 높음), 100에 가까울수록 신뢰 가능(정상 메일 가능성 높음),
   "summary": "한국어 2~3문장 분석 요약",
   "checklist": [
     { "text": "체크 항목 내용", "flagged": true 또는 false }
