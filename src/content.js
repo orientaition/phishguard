@@ -4,13 +4,13 @@
   'use strict';
 
   let lastAnalyzedId = '';
-  let isAnalyzing    = false;
+  let isAnalyzing = false;
 
   const observer = new MutationObserver(debounce(onDomChange, 800));
   observer.observe(document.body, { childList: true, subtree: true });
 
   function onDomChange() {
-    const body     = extractBody();
+    const body = extractBody();
     const metadata = extractMetadata();
     if (!body) return;
     const emailId = (metadata.senderEmail + '::' + metadata.subject).trim();
@@ -35,12 +35,12 @@
       if (subjectEl) meta.subject = subjectEl.innerText.trim();
       const senderEl = document.querySelector('span.gD');
       if (senderEl) {
-        meta.sender      = senderEl.getAttribute('name')  || '';
+        meta.sender = senderEl.getAttribute('name') || '';
         meta.senderEmail = senderEl.getAttribute('email') || '';
       }
       const dateEl = document.querySelector('span.g3');
       if (dateEl) meta.date = dateEl.innerText.trim();
-    } catch (e) {}
+    } catch (e) { }
     return meta;
   }
 
@@ -67,16 +67,16 @@
     const overlay = document.createElement('div');
     overlay.id = 'phishguard-overlay';
     Object.assign(overlay.style, {
-      position:       'fixed',
-      inset:          '0',
-      zIndex:         '2147483646',
-      background:     'rgba(140, 0, 0, 0.22)',
+      position: 'fixed',
+      inset: '0',
+      zIndex: '2147483646',
+      background: 'rgba(140, 0, 0, 0.22)',
       backdropFilter: 'blur(3px)',
-      display:        'flex',
-      alignItems:     'center',
+      display: 'flex',
+      alignItems: 'center',
       justifyContent: 'center',
-      fontFamily:     '"JetBrains Mono", monospace',
-      animation:      'pgFadeIn 0.25s ease forwards',
+      fontFamily: '"JetBrains Mono", monospace',
+      animation: 'pgFadeIn 0.25s ease forwards',
     });
 
     overlay.innerHTML = `
@@ -168,29 +168,31 @@
 
     if (!document.getElementById('phishguard-font')) {
       const link = document.createElement('link');
-      link.id    = 'phishguard-font';
-      link.rel   = 'stylesheet';
-      link.href  = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+KR:wght@400;500&display=swap';
+      link.id = 'phishguard-font';
+      link.rel = 'stylesheet';
+      link.href = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Noto+Sans+KR:wght@400;500&display=swap';
       document.head.appendChild(link);
     }
 
     const panel = document.createElement('div');
     panel.id = 'phishguard-root';
     Object.assign(panel.style, {
-      position:   'fixed',
-      top:        '64px',
-      right:      '12px',
-      width:      '330px',
-      maxHeight:  'calc(100vh - 80px)',
-      overflowY:  'auto',
-      zIndex:     '2147483647',
+      position: 'fixed',
+      top: '64px',
+      right: '12px',
+      width: '330px',
+      maxHeight: 'calc(100vh - 80px)',
+      overflowY: 'auto',
+      zIndex: '2147483647',
       fontFamily: '"JetBrains Mono", monospace',
-      fontSize:   '12px',
+      fontSize: '12px',
       lineHeight: '1.5',
     });
 
     panel.innerHTML = buildHTML(status, data, metadata);
     document.body.appendChild(panel);
+
+    makeDraggable(panel, panel.querySelector('#pg-header'));
 
     panel.querySelector('#pg-close')?.addEventListener('click', () => {
       panel.remove();
@@ -199,8 +201,25 @@
 
     panel.querySelectorAll('.pg-check').forEach(cb => {
       cb.addEventListener('change', () => {
-        const label = cb.closest('label');
-        if (label) label.style.opacity = cb.checked ? '0.4' : '1';
+        const itemWrap = cb.closest('.pg-checklist-item') || cb.closest('label');
+        if (itemWrap) itemWrap.style.opacity = cb.checked ? '0.4' : '1';
+      });
+    });
+
+    panel.querySelectorAll('.pg-expand-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const targetId = btn.getAttribute('data-target');
+        const content = panel.querySelector('#' + targetId);
+        if (content) {
+          if (content.style.display === 'none') {
+            content.style.display = 'block';
+            btn.textContent = '▲';
+          } else {
+            content.style.display = 'none';
+            btn.textContent = '▼';
+          }
+        }
       });
     });
   }
@@ -209,8 +228,8 @@
   function buildHTML(status, data, metadata) {
     const wrap = (content) => `
       <div style="background:#141414;border:1px solid #2a2a2a;border-radius:8px;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,0.6),0 0 0 1px rgba(255,255,255,0.04);">
-        <div style="padding:10px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #222;background:#1a1a1a;">
-          <div style="display:flex;align-items:center;gap:8px;">
+        <div id="pg-header" style="padding:10px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #222;background:#1a1a1a;cursor:move;user-select:none;">
+          <div style="display:flex;align-items:center;gap:8px;pointer-events:none;">
             <div style="width:22px;height:22px;background:rgba(255,60,60,0.12);border:1px solid rgba(255,60,60,0.3);border-radius:4px;display:flex;align-items:center;justify-content:center;">
               <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
                 <path d="M8 1L1.5 4.5V8c0 3.866 2.91 7 6.5 7s6.5-3.134 6.5-7V4.5L8 1z" stroke="#ff3c3c" stroke-width="1.4" fill="rgba(255,60,60,0.1)"/>
@@ -228,7 +247,7 @@
       return wrap(`
         <div style="padding:28px 16px;text-align:center;background:#141414;">
           <div style="display:flex;justify-content:center;gap:5px;margin-bottom:14px;">
-            ${[0,1,2].map(i => `<div style="width:7px;height:7px;border-radius:50%;background:#ff3c3c;animation:pgPulse 1.2s ${i*0.18}s ease-in-out infinite;"></div>`).join('')}
+            ${[0, 1, 2].map(i => `<div style="width:7px;height:7px;border-radius:50%;background:#ff3c3c;animation:pgPulse 1.2s ${i * 0.18}s ease-in-out infinite;"></div>`).join('')}
           </div>
           <div style="font-size:11px;letter-spacing:0.1em;color:#888;text-transform:uppercase;">AI 분석 중</div>
           <div style="font-size:10px;color:#555;margin-top:5px;font-family:'Noto Sans KR',sans-serif;">${esc(metadata?.senderEmail || '')}</div>
@@ -241,25 +260,43 @@
       return wrap(`
         <div style="padding:16px;background:#141414;">
           <div style="font-size:11px;color:#ff5555;font-family:'Noto Sans KR',sans-serif;line-height:1.6;">⚠ ${esc(data || '오류가 발생했습니다')}</div>
-          <div style="margin-top:8px;font-size:10px;color:#666;font-family:'Noto Sans KR',sans-serif;">팝업 → 설정 탭에서 Groq API 키를 확인해주세요</div>
+          <div style="margin-top:8px;font-size:10px;color:#666;font-family:'Noto Sans KR',sans-serif;">팝업 → 설정 탭에서 API 키를 확인해주세요</div>
         </div>
       `);
     }
 
-    const r       = data;
-    const color   = r.riskLevel === 'HIGH' ? '#ff5555' : r.riskLevel === 'MEDIUM' ? '#ffc233' : '#2ee87a';
-    const bg      = r.riskLevel === 'HIGH' ? 'rgba(255,60,60,0.08)' : r.riskLevel === 'MEDIUM' ? 'rgba(255,184,0,0.08)' : 'rgba(0,212,106,0.08)';
-    const border  = r.riskLevel === 'HIGH' ? 'rgba(255,60,60,0.2)' : r.riskLevel === 'MEDIUM' ? 'rgba(255,184,0,0.2)' : 'rgba(0,212,106,0.2)';
+    const r = data;
+    const color = r.riskLevel === 'HIGH' ? '#ff5555' : r.riskLevel === 'MEDIUM' ? '#ffc233' : '#2ee87a';
+    const bg = r.riskLevel === 'HIGH' ? 'rgba(255,60,60,0.08)' : r.riskLevel === 'MEDIUM' ? 'rgba(255,184,0,0.08)' : 'rgba(0,212,106,0.08)';
+    const border = r.riskLevel === 'HIGH' ? 'rgba(255,60,60,0.2)' : r.riskLevel === 'MEDIUM' ? 'rgba(255,184,0,0.2)' : 'rgba(0,212,106,0.2)';
     const labelKo = r.riskLevel === 'HIGH' ? '위험' : r.riskLevel === 'MEDIUM' ? '주의' : '안전';
-    const icon    = r.riskLevel === 'HIGH' ? '🔴' : r.riskLevel === 'MEDIUM' ? '🟡' : '🟢';
+    const icon = r.riskLevel === 'HIGH' ? '🔴' : r.riskLevel === 'MEDIUM' ? '🟡' : '🟢';
 
-    const checklist = (r.checklist || []).map(item => `
-      <label style="display:flex;align-items:flex-start;gap:10px;padding:9px 0;cursor:pointer;border-bottom:1px solid #1e1e1e;transition:opacity 0.2s;">
-        <input type="checkbox" class="pg-check" style="margin-top:2px;flex-shrink:0;accent-color:#ff3c3c;width:13px;height:13px;cursor:pointer;">
-        <span style="font-size:12px;line-height:1.6;color:${item.flagged ? '#ff6666' : '#bbb'};font-family:'Noto Sans KR',sans-serif;">
-          ${item.flagged ? '<span style="color:#ff5555;margin-right:3px;font-size:11px;">⚑</span>' : ''}${esc(item.text)}
-        </span>
-      </label>`).join('');
+    const checklist = (r.checklist || []).map((item, i) => {
+      const reasonHtml = item.flagged && item.reason ? `
+        <div class="pg-reason" id="pg-reason-${i}" style="display:none;margin-top:6px;padding:8px 10px;background:rgba(255,60,60,0.05);border-left:2px solid rgba(255,60,60,0.4);font-size:11px;color:#ffaaaa;font-family:'Noto Sans KR',sans-serif;line-height:1.5;border-radius:2px;">
+          ${esc(item.reason)}
+        </div>
+      ` : '';
+
+      const expandBtnHtml = item.flagged && item.reason ? `
+        <button type="button" class="pg-expand-btn" data-target="pg-reason-${i}" style="background:none;border:none;color:#888;cursor:pointer;margin-left:auto;padding:0 5px;font-size:10px;" title="이유 보기">▼</button>
+      ` : '';
+
+      return `
+      <div style="padding:9px 0;border-bottom:1px solid #1e1e1e;transition:opacity 0.2s;" class="pg-checklist-item">
+        <div style="display:flex;align-items:flex-start;gap:10px;">
+          <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;flex:1;">
+            <input type="checkbox" class="pg-check" style="margin-top:2px;flex-shrink:0;accent-color:#ff3c3c;width:13px;height:13px;cursor:pointer;">
+            <span style="font-size:12px;line-height:1.6;color:${item.flagged ? '#ff6666' : '#bbb'};font-family:'Noto Sans KR',sans-serif;">
+              ${item.flagged ? '<span style="color:#ff5555;margin-right:3px;font-size:11px;">⚑</span>' : ''}${esc(item.text)}
+            </span>
+          </label>
+          ${expandBtnHtml}
+        </div>
+        ${reasonHtml}
+      </div>`;
+    }).join('');
 
     const indicators = (r.indicators || []).length > 0 ? `
       <div style="padding:10px 14px 12px;">
@@ -297,12 +334,54 @@
   }
 
   function esc(str) {
-    return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   function debounce(fn, delay) {
     let t;
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), delay); };
+  }
+
+  function makeDraggable(el, handle) {
+    if (!handle) return;
+    let isDragging = false;
+    let startX, startY, initialX, initialY;
+
+    const onMouseDown = (e) => {
+      if (e.target.id === 'pg-close') return;
+      isDragging = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      const rect = el.getBoundingClientRect();
+      initialX = rect.left;
+      initialY = rect.top;
+
+      el.style.right = 'auto';
+      el.style.bottom = 'auto';
+      el.style.margin = '0';
+      el.style.left = initialX + 'px';
+      el.style.top = initialY + 'px';
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+      e.preventDefault();
+    };
+
+    const onMouseMove = (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      el.style.left = (initialX + dx) + 'px';
+      el.style.top = (initialY + dy) + 'px';
+    };
+
+    const onMouseUp = () => {
+      isDragging = false;
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+
+    handle.addEventListener('mousedown', onMouseDown);
   }
 
 })();
