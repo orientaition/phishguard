@@ -51,6 +51,10 @@
   let savedPosition    = null;
   let currentTheme     = 'light';
   let pendingEmailData = null;
+  let isMetadataChecking = false;
+  let analysisSeq      = 0;
+  let metadataSeq      = 0;
+  let lastLocationHref = location.href;
 
   const resultCache  = {};          // { emailId → { result, metadata, _overlayShown } }
   const rowRiskCache = new Map();   // { emailId → { riskLevel, score, indicators } }
@@ -95,6 +99,10 @@
   // MutationObserver 시작
   const observer = new MutationObserver(debounce(onDomChange, 800));
   observer.observe(document.body, { childList: true, subtree: true });
+  window.addEventListener('popstate', clearAnalysisUi);
+  window.addEventListener('hashchange', clearAnalysisUi);
+  document.addEventListener('click', handleNavigationClick, true);
+  setInterval(checkRouteChange, 500);
 
   // 블랙리스트/화이트리스트 변경 시 inbox row 전체 재스캔
   if (isExtensionValid()) {
@@ -124,10 +132,14 @@
 
     const body     = extractBody();
     const metadata = extractMetadata();
-    if (!body) return;
+    if (!body) {
+      if (!isGmailMessageRoute()) clearAnalysisUi();
+      return;
+    }
 
-    const emailId = metadata.senderEmail.trim();
-    if (!emailId || isAnalyzing) return;
+    const emailId = getEmailId(metadata);
+    if (!emailId) return;
+    if (isAnalyzing && emailId === lastAnalyzedId) return;
 
     // 같은 이메일
     if (emailId === lastAnalyzedId) {
@@ -140,6 +152,10 @@
     }
 
     // 새 이메일
+    isAnalyzing = false;
+    isMetadataChecking = false;
+    analysisSeq += 1;
+    metadataSeq += 1;
     panelDismissed = false;
     lastAnalyzedId = emailId;
     document.getElementById('phishguard-root')?.remove();
@@ -172,14 +188,72 @@
       }
 
       if (pre.riskLevel === 'LOW') {
-        // LOW → 기존 흐름대로 메타데이터 분석 후 AI 동의 패널
-        startMetadataAnalysis(body, metadata);
+        // LOW → 본문 전송 여부만 사용자에게 확인
+        startMetadataAnalysis(body, metadata, pre);
         return;
       }
     }
 
     // 3순위: MEDIUM 또는 사전 분석 없음
-    startMetadataAnalysis(body, metadata);
+    startMetadataAnalysis(body, metadata, pre);
+  }
+
+  function checkRouteChange() {
+    if (location.href === lastLocationHref) return;
+    lastLocationHref = location.href;
+    clearAnalysisUi();
+  }
+
+  function handleNavigationClick(e) {
+    const nav = e.target?.closest?.('[role="button"], a, button');
+    if (!nav) return;
+
+    const label = [
+      nav.getAttribute('aria-label'),
+      nav.getAttribute('data-tooltip'),
+      nav.getAttribute('title'),
+      nav.textContent
+    ].filter(Boolean).join(' ').trim();
+
+    if (!isGmailBackToListControl(label)) return;
+    clearAnalysisUi();
+  }
+
+  function isGmailBackToListControl(label) {
+    return /^(back|뒤로|이전|목록으로|받은편지함으로|메일 목록으로)/i.test(label) ||
+      /(back to inbox|back to|inbox|받은편지함|메일 목록|목록으로 돌아가기|이전 페이지)/i.test(label);
+  }
+
+  function isGmailMessageRoute() {
+    const hash = decodeURIComponent(location.hash || '').replace(/^#\/?/, '');
+    if (!hash) return false;
+
+    const parts = hash.split('/').filter(Boolean);
+    if (parts.length < 2) return false;
+
+    const threadId = parts[parts.length - 1];
+    return /^(FMfc|Ktbx|[a-f0-9]{12,}|[0-9]+)$/i.test(threadId);
+  }
+
+  function clearAnalysisUi() {
+    document.getElementById('phishguard-root')?.remove();
+    document.getElementById('pg-deep-analysis-btn')?.remove();
+    document.getElementById('phishguard-overlay')?.remove();
+    document.getElementById('phishguard-consent')?.remove();
+    pendingEmailData = null;
+    lastAnalyzedId = '';
+    panelDismissed = false;
+    isAnalyzing = false;
+    isMetadataChecking = false;
+    analysisSeq += 1;
+    metadataSeq += 1;
+  }
+
+  function isCurrentEmailView(metadata) {
+    const body = extractBody();
+    if (!body) return false;
+    if (!isGmailMessageRoute() && !hasVisibleMessageShell()) return false;
+    return getEmailId(extractMetadata()) === getEmailId(metadata);
   }
 
   // ══════════════════════════════════════════════
@@ -401,7 +475,7 @@
     if (/[а-яА-Я\u0370-\u03FF]/.test(domain)) {
       score += 40; indicators.push('유니코드 스푸핑 의심 (동형 문자)');
     }
-    if (/[\u200B-\u200D\uFEFF]/.test(text)) {
+    if (/[\u200B-\u200D\uFEFF]/.test(senderEmail)) {
       score += 20; indicators.push('숨겨진 Zero-width 문자 포함');
     }
     if (/\d/.test(domain)) {
@@ -421,7 +495,7 @@
 
   function extractBody() {
     for (const sel of ['div.a3s.aiL', 'div[data-message-id] .a3s', '.ii.gt .a3s.aiL', 'div.gs .a3s']) {
-      const el = document.querySelector(sel);
+      const el = Array.from(document.querySelectorAll(sel)).find(isVisibleElement);
       if (el && el.innerText.trim().length > 30) return el.innerText.trim();
     }
     return null;
@@ -430,22 +504,96 @@
   function extractMetadata() {
     const meta = { subject: '', sender: '', senderEmail: '', date: '' };
     try {
-      meta.subject     = document.querySelector('h2.hP')?.innerText.trim()        || '';
-      meta.sender      = document.querySelector('span.gD')?.getAttribute('name')  || '';
-      meta.senderEmail = document.querySelector('span.gD')?.getAttribute('email') || '';
-      meta.date        = document.querySelector('span.g3')?.innerText.trim()      || '';
+      const subjectEl = Array.from(document.querySelectorAll('h2.hP')).find(isVisibleElement);
+      const senderEl  = Array.from(document.querySelectorAll('span.gD')).find(isVisibleElement);
+      const dateEl    = Array.from(document.querySelectorAll('span.g3')).find(isVisibleElement);
+
+      meta.subject     = subjectEl?.innerText.trim()        || '';
+      meta.sender      = senderEl?.getAttribute('name')     || '';
+      meta.senderEmail = senderEl?.getAttribute('email')    || '';
+      meta.date        = dateEl?.innerText.trim()           || '';
     } catch (_) {}
     return meta;
+  }
+
+  function hasVisibleMessageShell() {
+    return !!Array.from(document.querySelectorAll('h2.hP, span.gD, div[role="main"] div.a3s')).find(isVisibleElement);
+  }
+
+  function isVisibleElement(el) {
+    if (!el) return false;
+    const rect = el.getBoundingClientRect();
+    const style = getComputedStyle(el);
+    return rect.width > 0 &&
+      rect.height > 0 &&
+      rect.bottom > 0 &&
+      rect.right > 0 &&
+      rect.top < window.innerHeight &&
+      rect.left < window.innerWidth &&
+      style.display !== 'none' &&
+      style.visibility !== 'hidden' &&
+      style.opacity !== '0';
+  }
+
+  function getEmailId(metadata) {
+    const senderEmail = metadata?.senderEmail?.trim();
+    if (senderEmail) return senderEmail;
+    return `${metadata?.sender || ''}::${metadata?.subject || ''}`.trim();
   }
 
   // ══════════════════════════════════════════════
   // 메타데이터 기반 사전 분석 (Privacy-First)
   // ══════════════════════════════════════════════
 
-  function startMetadataAnalysis(body, metadata) {
-    // 항상 동의 패널 표시 → 사용자가 AI 분석 여부 직접 결정
+  function startMetadataAnalysis(body, metadata, preRisk) {
     pendingEmailData = { body, metadata };
-    showContentConsentPanel(metadata);
+
+    if (!isExtensionValid()) return;
+    if (isMetadataChecking) return;
+
+    isMetadataChecking = true;
+    const seq = ++metadataSeq;
+    const fallbackTimer = setTimeout(() => {
+      if (seq === metadataSeq && isMetadataChecking && isCurrentEmailView(metadata)) {
+        showContentConsentPanel(metadata, preRisk);
+      }
+    }, 2500);
+    console.debug('[PhishGuard] metadata precheck start', {
+      sender: metadata.sender,
+      senderEmail: metadata.senderEmail,
+      subject: metadata.subject,
+      preRisk
+    });
+    try {
+      chrome.runtime.sendMessage(
+        { type: 'ANALYZE_METADATA', payload: { metadata, preRisk } },
+        (response) => {
+          if (seq !== metadataSeq) return;
+          clearTimeout(fallbackTimer);
+          isMetadataChecking = false;
+          if (!isExtensionValid() || chrome.runtime.lastError) {
+            console.debug('[PhishGuard] metadata precheck runtime error', chrome.runtime.lastError?.message);
+            if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
+            return;
+          }
+          if (!response?.ok) {
+            console.debug('[PhishGuard] metadata precheck failed', response?.error);
+            if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
+            return;
+          }
+
+          const metaRisk = response.result;
+          console.debug('[PhishGuard] metadata precheck result', metaRisk);
+          if (!isCurrentEmailView(metadata)) return;
+          showContentConsentPanel(metadata, preRisk, metaRisk);
+        }
+      );
+    } catch (_) {
+      if (seq !== metadataSeq) return;
+      clearTimeout(fallbackTimer);
+      isMetadataChecking = false;
+      if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
+    }
   }
 
   // ══════════════════════════════════════════════
@@ -455,6 +603,8 @@
   function startAnalysis(body, metadata) {
     isAnalyzing = true;
     showPanel('loading', null, metadata);
+    const analysisEmailId = getEmailId(metadata);
+    const seq = ++analysisSeq;
 
     if (!isExtensionValid()) {
       isAnalyzing = false;
@@ -466,23 +616,28 @@
       chrome.runtime.sendMessage(
         { type: 'ANALYZE_EMAIL', payload: { body, metadata } },
         (response) => {
+          if (seq !== analysisSeq) return;
           isAnalyzing = false;
           if (!isExtensionValid() || chrome.runtime.lastError) {
+            if (!isCurrentEmailView(metadata)) return;
             showPanel('error',
               chrome.runtime.lastError?.message || '확장 프로그램을 새로고침해주세요.',
               metadata);
             return;
           }
           if (!response?.ok) {
+            if (!isCurrentEmailView(metadata)) return;
             showPanel('error', response?.error || '알 수 없는 오류', metadata);
             return;
           }
           try { chrome.runtime.sendMessage({ type: 'UPDATE_STATS', level: response.result.riskLevel }); } catch (_) {}
-          resultCache[lastAnalyzedId] = { result: response.result, metadata };
+          resultCache[analysisEmailId] = { result: response.result, metadata };
+          if (!isCurrentEmailView(metadata)) return;
           showPanel('result', response.result, metadata);
         }
       );
     } catch (_) {
+      if (seq !== analysisSeq) return;
       isAnalyzing = false;
       showPanel('error', '페이지를 새로고침해주세요.', metadata);
     }
@@ -577,8 +732,25 @@
     const onEsc = (e) => { if (e.key === 'Escape') { closeOv(); document.removeEventListener('keydown', onEsc); } };
     document.addEventListener('keydown', onEsc);
   }
-  function showContentConsentPanel(metadata) {
+  function showContentConsentPanel(metadata, preRisk, metaRisk) {
     document.getElementById('phishguard-consent')?.remove();
+
+    const riskLevel = preRisk?.riskLevel || 'UNKNOWN';
+    const indicators = preRisk?.indicators || [];
+    const aiSignals = metaRisk?.signals || [];
+    const reason = metaRisk?.reason || '';
+    const needsAdditionalCheck = metaRisk?.needsAdditionalCheck !== false;
+    const signalList = aiSignals.length ? aiSignals : indicators;
+    const intro = needsAdditionalCheck
+      ? '이 이메일에서 일부 의심 요소가 발견되었습니다.'
+      : '1차 검사 결과 뚜렷한 피싱 위험 신호는 확인되지 않았습니다.';
+    const title = needsAdditionalCheck ? '추가 검사가 필요합니다' : '1차 검사 결과 정상으로 보입니다';
+    const detail = [
+      intro,
+      reason ? `<br><br><strong style="color:#3c4043">판단 근거</strong><br>${esc(reason)}` : '',
+      signalList.length ? `<br><br>${signalList.slice(0, 3).map(x => `• ${esc(x)}`).join('<br>')}` : '',
+      '<br><br>개인정보보호를 위해 본문은 아직 AI에 전송되지 않았습니다.'
+    ].join('');
 
     const box = document.createElement('div');
     box.id = 'phishguard-consent';
@@ -590,10 +762,9 @@
     });
 
     box.innerHTML = `
-      <div style="font-size:15px;font-weight:600;margin-bottom:10px">추가 검사가 필요합니다</div>
+      <div style="font-size:15px;font-weight:600;margin-bottom:10px">${title}</div>
       <div style="font-size:13px;color:#5f6368;line-height:1.6;margin-bottom:16px">
-        이 이메일에서 일부 의심 요소가 발견되었습니다.<br><br>
-        개인정보 보호를 위해 본문은 아직 AI에 전송되지 않았습니다.
+        ${detail}
       </div>
       <button id="pg-analyze-full"
         style="width:100%;padding:10px;border:none;border-radius:8px;background:#1a73e8;
@@ -830,15 +1001,16 @@
       const ib = flagged
         ? `background:${T.redBg};border-radius:8px;padding:10px 12px;margin:4px 0`
         : 'padding:10px 0';
-      const reason = flagged && item.reason
+      const reasonBorder = flagged ? T.redBorder : T.border;
+      const reason = item.reason
         ? `<div class="pg-reason" id="pg-reason-${i}"
-               style="display:none;margin-top:8px;padding:8px 12px;background:${T.bg2};
-                      border:1px solid ${T.redBorder};border-radius:6px;font-size:12px;
-                      color:${T.text2};line-height:1.6">${esc(item.reason)}</div>` : '';
-      const expBtn = flagged && item.reason
+                style="display:none;margin-top:8px;padding:8px 12px;background:${T.bg2};
+                       border:1px solid ${reasonBorder};border-radius:6px;font-size:12px;
+                       color:${T.text2};line-height:1.6">${esc(item.reason)}</div>` : '';
+      const expBtn = item.reason
         ? `<button type="button" class="pg-expand-btn" data-target="pg-reason-${i}"
                    style="background:none;border:none;color:${T.muted};cursor:pointer;
-                          margin-left:auto;padding:2px 6px;font-size:10px;border-radius:4px"
+                           margin-left:auto;padding:2px 6px;font-size:10px;border-radius:4px"
                    onmouseover="this.style.background='${T.hover}'"
                    onmouseout="this.style.background='none'">▼</button>` : '';
       return `
