@@ -14,13 +14,26 @@ const files = [
 ]
 
 files.forEach(([src, dest]) => {
+
   const srcPath  = path.join(__dirname, src)
   const destPath = path.join(dist, dest)
+
+  // dist 내부 하위 폴더 자동 생성
+  const destDir = path.dirname(destPath)
+
+  if (!fs.existsSync(destDir)) {
+    fs.mkdirSync(destDir, { recursive: true })
+  }
+
+  // 원본 파일 체크
   if (!fs.existsSync(srcPath)) {
     console.error(`❌ 파일 없음: ${src}`)
     process.exit(1)
   }
+
+  // 파일 복사
   fs.copyFileSync(srcPath, destPath)
+
   console.log(`✅ ${src} → dist/${dest}`)
 })
 

@@ -5,11 +5,14 @@
   "description": "Groq AI 기반 스피어피싱 실시간 탐지 — Gmail",
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
     "https://mail.google.com/*",
-    "https://api.groq.com/*"
+    "https://api.groq.com/*",
+    "https://api.openai.com/*",
+    "https://generativelanguage.googleapis.com/*"
   ],
   "action": {
     "default_popup": "popup.html"

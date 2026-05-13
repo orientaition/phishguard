@@ -2,10 +2,10 @@
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'ANALYZE_EMAIL') {
-    chrome.storage.local.get(['apiKeys', 'selectedModel', 'groqApiKey'], (stored) => {
+    chrome.storage.local.get(['apiKeys', 'selectedModel', 'groqApiKey', 'whitelist', 'blacklist'], (stored) => {
       handleAnalysis(message.payload, stored)
         .then(result => sendResponse({ ok: true, result }))
-        .catch(err => sendResponse({ ok: false, error: err.message }));
+        .catch(err  => sendResponse({ ok: false, error: err.message }));
     });
     return true;
   }
@@ -24,59 +24,64 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleAnalysis({ body, metadata }, stored) {
-  const model = stored.selectedModel || 'groq';
+  // ── AI 분석 ──
+  const model   = stored.selectedModel || 'groq';
   const apiKeys = stored.apiKeys || {};
-  let apiKey = apiKeys[model];
+  let apiKey    = apiKeys[model];
 
-  if (!apiKey && model === 'groq') apiKey = stored.groqApiKey; // 마이그레이션 용도
+  // groqApiKey 마이그레이션 지원
+  if (!apiKey && model === 'groq') apiKey = stored.groqApiKey;
 
   if (!apiKey || apiKey.trim() === '') {
-    throw new Error(`API 키가 설정되지 않았습니다. 팝업에서 설정 메뉴를 확인해주세요.`);
+    throw new Error('API 키가 설정되지 않았습니다. 팝업에서 설정 메뉴를 확인해주세요.');
   }
 
   const sys = buildSystem();
   const usr = buildPrompt(metadata, body);
-  let raw = '';
+  let raw   = '';
 
   if (model === 'groq') {
     const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
+      method : 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages: [{ role: 'system', content: sys }, { role: 'user', content: usr }],
-        temperature: 0.1,
-        response_format: { type: 'json_object' },
-      }),
+      body   : JSON.stringify({
+        model          : 'llama-3.3-70b-versatile',
+        messages       : [{ role: 'system', content: sys }, { role: 'user', content: usr }],
+        temperature    : 0.1,
+        response_format: { type: 'json_object' }
+      })
     });
     if (!response.ok) throw new Error(`Groq API 오류: ${response.status}`);
     const data = await response.json();
     raw = data?.choices?.[0]?.message?.content || '';
+
   } else if (model === 'gpt') {
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
+      method : 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
-      body: JSON.stringify({
-        model: 'gpt-5.4',
-        messages: [{ role: 'system', content: sys }, { role: 'user', content: usr }],
-        temperature: 0.1,
-        response_format: { type: 'json_object' },
-      }),
+      body   : JSON.stringify({
+        model          : 'gpt-4o',          // 수정: gpt-5.4 → gpt-4o
+        messages       : [{ role: 'system', content: sys }, { role: 'user', content: usr }],
+        temperature    : 0.1,
+        response_format: { type: 'json_object' }
+      })
     });
     if (!response.ok) throw new Error(`GPT API 오류: ${response.status}`);
     const data = await response.json();
     raw = data?.choices?.[0]?.message?.content || '';
+
   } else if (model === 'gemini') {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key=${apiKey}`;
+    // 수정: gemini-3-flash-preview → gemini-1.5-flash
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
     const response = await fetch(url, {
-      method: 'POST',
+      method : 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+      body   : JSON.stringify({
         systemInstruction: { parts: [{ text: sys }] },
-        contents: [{ role: 'user', parts: [{ text: usr }] }],
-        generationConfig: { temperature: 0.1, responseMimeType: 'application/json' },
-        tools: [{ googleSearch: {} }] // 제미나이 그라운딩(인터넷 검색)
-      }),
+        contents         : [{ role: 'user', parts: [{ text: usr }] }],
+        generationConfig : { temperature: 0.1, responseMimeType: 'application/json' },
+        tools            : [{ googleSearch: {} }]
+      })
     });
     if (!response.ok) throw new Error(`Gemini API 오류: ${response.status}`);
     const data = await response.json();
@@ -105,7 +110,7 @@ IMPORTANT:
   "confidence": 0~100 사이 정수. 이 메일을 신뢰할 수 있는 정도를 나타냅니다. 0에 가까울수록 신뢰 불가(피싱 가능성 높음), 100에 가까울수록 신뢰 가능(정상 메일 가능성 높음),
   "summary": "한국어 2~3문장 분석 요약",
   "checklist": [
-    { "text": "체크 항목 내용", 
+    { "text": "체크 항목 내용",
       "flagged": true 또는 false,
       "reason": "flagged가 true인 경우 구체적인 이유를 한국어로 작성 (false인 경우 빈 문자열)" }
   ],
@@ -128,10 +133,10 @@ CRITICAL — flagged 값 규칙:
 }
 
 function buildPrompt(metadata, body) {
-  return `제목: ${metadata.subject || '(없음)'}
-발신자명: ${metadata.sender || '(없음)'}
+  return `제목: ${metadata.subject   || '(없음)'}
+발신자명: ${metadata.sender      || '(없음)'}
 발신자 이메일: ${metadata.senderEmail || '(없음)'}
-날짜: ${metadata.date || '(없음)'}
+날짜: ${metadata.date         || '(없음)'}
 
 본문:
 ${body.substring(0, 3000)}`;
