@@ -1,151 +1,138 @@
-# 🛡 PhishGuard AI
+# PhishGuard AI
 
-> Gmail 스피어피싱 실시간 탐지 Chrome 확장프로그램  
-> Groq LLaMA 3.3 기반 · BYOK · Chrome Manifest V3
+Gmail에서 메일을 열 때 발신자, 제목, 본문, 로컬 규칙을 함께 분석해 스피어피싱 위험을 알려주는 Chrome Manifest V3 확장 프로그램입니다.
 
----
-
-## 개요
-
-PhishGuard AI는 Gmail에서 이메일을 열 때 AI가 자동으로 스피어피싱 여부를 분석하고, 단순 경고가 아닌 **사용자 판단 유도형 체크리스트**를 제공하는 Chrome 확장프로그램입니다.
-
-인간의 눈은 `paypa1.com`, `micros0ft.com` 같은 유사 도메인을 쉽게 놓치지만, LLM은 이를 정확히 탐지합니다. PhishGuard AI는 이 LLM의 강점을 활용해 스피어피싱으로부터 사용자를 보호합니다.
-
----
+PhishGuard AI는 별도 서버 없이 사용자의 브라우저에서 동작합니다. API 키는 사용자가 직접 발급해 입력하는 BYOK 방식이며, 키와 설정은 `chrome.storage.local`에 저장됩니다.
 
 ## 주요 기능
 
-- **자동 감지** — Gmail SPA 구조를 `MutationObserver`로 감시, 이메일을 열면 자동 분석
-- **위험도 분류** — HIGH / MEDIUM / LOW 3단계 + 신뢰도(%) 표시
-- **판단 유도형 체크리스트** — 사용자가 직접 확인해야 할 6가지 항목 제공
-- **위협 지표 표시** — AI가 탐지한 구체적인 위협 요소 목록
-- **HIGH 위험 오버레이** — 위험도가 HIGH일 때 화면 전체를 덮는 경고 팝업
-- **분석 통계** — 위험/주의/안전/총 분석 횟수 누적
-- **BYOK** — API 키를 `chrome.storage.local`에만 저장, 외부 서버 없음
+- Gmail SPA 화면 감지: `MutationObserver`, URL 변경 감지, 뒤로가기/목록 이동 감지를 함께 사용합니다.
+- 메일 상세 화면 분석: 발신자명, 발신자 이메일, 제목, 날짜, 본문을 추출해 AI 분석에 사용합니다.
+- 개인정보 우선 흐름: 먼저 메타데이터와 로컬 검사 결과로 추가 정밀검사 필요 여부를 판단하고, 본문 전송 전 사용자 확인을 받습니다.
+- 위험도 표시: `HIGH`, `MEDIUM`, `LOW` 위험도와 신뢰도, 판단 요약, 체크리스트, 의심 신호를 표시합니다.
+- 고위험 경고: 위험도가 높은 메일은 전체 화면 오버레이와 분석 패널로 경고합니다.
+- Gmail 목록 사전 검사: 메일 목록에서 발신자/제목 기반 로컬 위험 신호를 표시합니다.
+- 화이트리스트/블랙리스트: 이메일 주소 또는 도메인 단위로 등록할 수 있습니다.
+- 분석 통계: 높음/보통/낮음/총 분석 횟수를 누적합니다.
+- 테마: 팝업과 분석 패널에서 라이트/다크 모드를 지원합니다.
+- 모델 선택: Groq, Gemini, GPT API 키를 모델별로 저장하고 선택할 수 있습니다.
 
-### 체크리스트 항목
+## 지원 모델
 
-| # | 항목 |
-|---|------|
-| 1 | 발신자 이메일 주소 철자가 공식 도메인과 정확히 일치하는지 |
-| 2 | 이메일 내 링크를 클릭하지 않고 공식 사이트로 직접 접속해야 하는지 |
-| 3 | 본문에 긴급한 액션을 요구하는 압박 문구가 있는지 |
-| 4 | 개인정보나 자격증명을 요청하는지 |
-| 5 | 발신자 표시명과 실제 이메일 주소가 불일치하는지 |
-| 6 | 맞춤법 오류, 어색한 번역투가 있는지 |
+현재 코드 기준으로 다음 API 경로를 지원합니다.
 
----
+| 선택값 | API | 사용 모델 |
+| --- | --- | --- |
+| `groq` | Groq Chat Completions | `llama-3.3-70b-versatile` |
+| `gemini` | Google Generative Language API | `gemini-1.5-flash` |
+| `gpt` | OpenAI Chat Completions | `gpt-4o` |
 
-## 설치 방법
+팝업 UI의 표시 문구와 실제 호출 모델이 다를 수 있으므로, 모델 변경 시 [src/background.js](src/background.js)를 함께 확인하세요.
 
-### 1. Groq API 키 발급 (무료)
+## 설치 및 실행
 
-1. [console.groq.com](https://console.groq.com) 접속 후 가입
-2. **API Keys** → **Create API Key**
-3. `gsk_...` 형태의 키 복사
-
-### 2. 프로젝트 빌드
+### 1. 저장소 받기
 
 ```bash
-git clone https://github.com/your-username/phishguard.git
+git clone https://github.com/orientaition/phishguard.git
 cd phishguard
+```
+
+### 2. 빌드
+
+```bash
 npm run build
 ```
 
-외부 패키지 의존성 없이 `dist/` 폴더가 생성됩니다.
+PowerShell 실행 정책 때문에 `npm`이 막히면 Windows에서는 아래 명령을 사용하세요.
+
+```powershell
+npm.cmd run build
+```
+
+빌드가 끝나면 `dist/` 폴더에 Chrome에서 로드할 파일이 복사됩니다.
 
 ### 3. Chrome에 로드
 
-1. Chrome에서 `chrome://extensions/` 접속
-2. 우측 상단 **개발자 모드** 활성화
-3. **압축해제된 확장 프로그램 로드** 클릭
-4. `dist/` 폴더 선택
+1. Chrome에서 `chrome://extensions/`로 이동합니다.
+2. 오른쪽 위의 개발자 모드를 켭니다.
+3. 압축해제된 확장 프로그램 로드를 클릭합니다.
+4. 이 프로젝트의 `dist/` 폴더를 선택합니다.
 
-### 4. API 키 입력
+### 4. API 키 설정
 
-1. Chrome 툴바에서 **PhishGuard AI** 아이콘 클릭
-2. **설정** 탭 → Groq API 키 입력
-3. **[ 저장 ]** 클릭
+1. Chrome 툴바에서 PhishGuard AI 아이콘을 클릭합니다.
+2. 설정 탭에서 사용할 AI 모델을 선택합니다.
+3. 해당 모델의 API 키를 입력하고 저장합니다.
+4. Gmail 탭을 새로고침합니다.
 
-### 5. 사용
+## 사용 방법
 
-Gmail([mail.google.com](https://mail.google.com))에서 이메일을 열면 우측 상단에 분석 패널이 자동으로 나타납니다.
+1. Gmail에서 메일 목록을 엽니다.
+2. 의심 메일을 클릭합니다.
+3. PhishGuard가 메일 메타데이터와 로컬 규칙으로 1차 검사를 수행합니다.
+4. 필요하면 추가 검사 확인창이 뜹니다.
+5. 사용자가 본문 포함 정밀 분석을 승인하면 AI 분석 결과 패널이 표시됩니다.
+6. 메일 목록으로 돌아가거나 Gmail 홈으로 이동하면 검사창과 경고창은 자동으로 사라집니다.
 
----
+## 동작 흐름
+
+```text
+Gmail 메일 열람
+  -> content.js가 DOM/URL 변화를 감지
+  -> 메일 본문과 메타데이터 추출
+  -> 목록 사전 검사 캐시, 화이트리스트, 블랙리스트 확인
+  -> 메타데이터 기반 1차 AI 검사
+  -> 사용자 동의 후 본문 포함 정밀 검사
+  -> 위험도, 요약, 체크리스트, 의심 신호 표시
+  -> 메일 상세 화면을 벗어나면 PhishGuard UI 제거
+```
 
 ## 파일 구조
 
-```
+```text
 phishguard/
-├── manifest.json       # Chrome MV3 설정
-├── popup.html          # 팝업 UI
-├── build.js            # 빌드 스크립트
+├── manifest.json        # Chrome Manifest V3 설정
+├── popup.html           # 확장 프로그램 팝업 UI
+├── build.js             # src 파일을 dist로 복사하는 빌드 스크립트
 ├── package.json
-└── src/
-    ├── background.js   # Service Worker — Groq API 호출
-    ├── content.js      # Gmail DOM 감시 + 패널 주입
-    └── popup.js        # 팝업 로직
+├── src/
+│   ├── background.js    # Service Worker, AI API 호출, 통계 업데이트
+│   ├── content.js       # Gmail DOM 감지, 분석 패널/경고창 주입
+│   └── popup.js         # 팝업 설정, 통계, API 키, 리스트 관리
+└── dist/                # Chrome에 로드하는 빌드 산출물
 ```
 
----
+## 개발 메모
 
-## 작동 원리
+- 실제 Chrome 확장은 `dist/manifest.json` 기준으로 로드됩니다.
+- `src/content.js`를 수정한 뒤에는 반드시 `npm.cmd run build` 또는 `npm run build`를 실행해야 `dist/content.js`에 반영됩니다.
+- `dist/`가 Git 추적 대상이 아니면 커밋에는 원본 `src/` 변경만 포함됩니다.
+- Gmail DOM 클래스는 바뀔 수 있습니다. 본문/메타데이터 추출이 깨지면 [src/content.js](src/content.js)의 `extractBody()`와 `extractMetadata()` 선택자를 확인하세요.
+- Gmail은 SPA라서 `hashchange`만으로 화면 전환을 모두 잡지 못할 수 있습니다. 현재 구현은 DOM 변화, URL polling, 클릭 감지를 함께 사용합니다.
 
-```
-Gmail 이메일 열람
-       ↓
-MutationObserver DOM 변화 감지 (SPA 대응)
-       ↓
-div.a3s.aiL 본문 + 메타데이터 추출
-       ↓
-background.js → Groq API 호출 (LLaMA 3.3 70B)
-       ↓
-JSON 응답 파싱 (riskLevel, confidence, checklist, indicators)
-       ↓
-Gmail 화면에 분석 패널 주입
-  ├─ HIGH   → 전체화면 경고 오버레이 + 분석 패널
-  ├─ MEDIUM → 분석 패널
-  └─ LOW    → 분석 패널
-```
+## 보안 모델
 
----
+- API 키는 사용자의 브라우저 로컬 저장소에만 저장됩니다.
+- 별도 백엔드 서버를 사용하지 않습니다.
+- 본문은 사용자가 추가 정밀 검사를 승인한 뒤에만 선택한 AI API로 전송됩니다.
+- 화이트리스트/블랙리스트도 로컬 저장소에 보관됩니다.
 
-## 기술 스택
+## 문제 해결
 
-| 항목 | 내용 |
-|------|------|
-| 표준 | Chrome Manifest V3 |
-| AI | Groq API · LLaMA 3.3 70B Versatile |
-| 언어 | Vanilla JS (content/background), HTML/CSS (popup) |
-| 빌드 | Node.js 파일 복사 스크립트 |
-| 저장 | chrome.storage.local (BYOK) |
+### 검사창이 뜨지 않을 때
 
----
+1. `npm.cmd run build`를 실행했는지 확인합니다.
+2. `chrome://extensions/`에서 확장 프로그램을 새로고침합니다.
+3. Gmail 탭을 새로고침합니다.
+4. 팝업에서 API 키가 저장되어 있는지 확인합니다.
+5. Gmail 메일 상세 화면에서 본문이 실제로 로드된 뒤 잠시 기다립니다.
 
-## BYOK 보안 모델
+### 메일 목록으로 돌아와도 검사창이 남아 있을 때
 
-- API 키는 사용자 브라우저의 `chrome.storage.local`에만 저장
-- 별도 서버 없음 — 브라우저 ↔ Groq API 직접 통신
-- 코드에 API 키 하드코딩 없음
-
----
-
-## Gmail DOM 선택자 업데이트
-
-Google이 Gmail 클래스명을 변경한 경우 `src/content.js` 상단의 `selectors` 배열을 수정하세요.
-
-```js
-const selectors = [
-  'div.a3s.aiL',             // 주 선택자
-  'div[data-message-id] .a3s',
-  '.ii.gt .a3s.aiL',
-  'div.gs .a3s',
-];
-```
-
-Gmail에서 F12 → 이메일 본문 요소 확인 후 업데이트하면 됩니다.
-
----
+1. 최신 `src/content.js`가 `dist/content.js`에 빌드되었는지 확인합니다.
+2. 확장 프로그램과 Gmail 탭을 모두 새로고침합니다.
+3. URL 변경 감지 또는 Gmail DOM 선택자가 깨졌을 수 있으므로 `isGmailMessageRoute()`, `clearAnalysisUi()`, `extractBody()`를 확인합니다.
 
 ## 라이선스
 
