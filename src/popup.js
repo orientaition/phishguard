@@ -8,22 +8,14 @@ const keyStatus = document.getElementById('key-status');
 const btnSave = document.getElementById('btn-save');
 const btnClear = document.getElementById('btn-clear');
 const btnReset = document.getElementById('btn-reset');
+const btnLogs = document.getElementById('btn-logs');
+const btnDomains = document.getElementById('btn-domains');
 const btnToggle = document.getElementById('btn-toggle');
 const themeToggle = document.getElementById('theme-toggle');
 const badgeDot = document.getElementById('badge-dot');
 const badgeTxt = document.getElementById('badge-txt');
 
-const whitelistInput = document.getElementById('whitelist-input');
-const whitelistAdd = document.getElementById('whitelist-add');
-const whitelistList = document.getElementById('whitelist-list');
-
-const blacklistInput = document.getElementById('blacklist-input');
-const blacklistAdd = document.getElementById('blacklist-add');
-const blacklistList = document.getElementById('blacklist-list');
-
 let apiKeys = {};
-let whitelist = [];
-let blacklist = [];
 
 // ── 테마 로드 & 토글 ────────────────────────────────────────────────
 chrome.storage.local.get(['theme'], (data) => {
@@ -83,12 +75,8 @@ if (btnToggle) {
 }
 
 // ── 초기 로드 ─────────────────────────────────────────────────────────
-chrome.storage.local.get(['apiKeys', 'selectedModel', 'groqApiKey', 'stats', 'whitelist', 'blacklist'], (data) => {
+chrome.storage.local.get(['apiKeys', 'selectedModel', 'groqApiKey', 'stats'], (data) => {
   apiKeys = data.apiKeys || {};
-  whitelist = data.whitelist || [];
-  blacklist = data.blacklist || [];
-
-  renderDomainLists();
 
   if (!apiKeys.groq && data.groqApiKey) apiKeys.groq = data.groqApiKey;
 
@@ -267,6 +255,57 @@ if (btnReset) {
   });
 }
 
+// ── API 응답 로그 ───────────────────────────────────────────────────
+if (btnLogs) {
+  btnLogs.addEventListener('click', () => {
+    openApiLogWindow();
+  });
+}
+
+if (btnDomains) {
+  btnDomains.addEventListener('click', () => {
+    openDomainListWindow();
+  });
+}
+
+function openApiLogWindow() {
+  const url = chrome.runtime.getURL('logs.html');
+  const options = {
+    url,
+    type: 'popup',
+    width: 940,
+    height: 720,
+    focused: true
+  };
+
+  if (chrome.windows?.create) {
+    chrome.windows.create(options, () => window.close());
+    return;
+  }
+
+  window.open(url, 'phishguard-api-logs', 'width=940,height=720');
+  window.close();
+}
+
+function openDomainListWindow() {
+  const url = chrome.runtime.getURL('domains.html');
+  const options = {
+    url,
+    type: 'popup',
+    width: 860,
+    height: 640,
+    focused: true
+  };
+
+  if (chrome.windows?.create) {
+    chrome.windows.create(options, () => window.close());
+    return;
+  }
+
+  window.open(url, 'phishguard-domains', 'width=860,height=640');
+  window.close();
+}
+
 // ── 유틸 ─────────────────────────────────────────────────────────────
 function setKeyStatus(ok, model) {
   let issueUrl = '발급 사이트 확인 요망';
@@ -293,156 +332,3 @@ function setActiveBadge(ok) {
   }
 }
 
-// ─────────────────────────────────────────────
-// Domain List UI
-// ─────────────────────────────────────────────
-
-// 초기 로드
-chrome.storage.local.get(
-  ['whitelist', 'blacklist'],
-  (data) => {
-
-    whitelist = data.whitelist || [];
-    blacklist = data.blacklist || [];
-
-    renderDomainLists();
-  }
-);
-
-if (whitelistAdd) {
-  whitelistAdd.addEventListener('click', () => {
-
-    const domain =
-      whitelistInput.value
-        .trim()
-        .toLowerCase();
-
-    if (!domain) return;
-
-    if (!whitelist.includes(domain)) {
-
-      whitelist.push(domain);
-
-      chrome.storage.local.set({
-        whitelist
-      });
-
-      renderDomainLists();
-    }
-
-    whitelistInput.value = '';
-  });
-}
-
-if (blacklistAdd) {
-  blacklistAdd.addEventListener('click', () => {
-
-    const domain =
-      blacklistInput.value
-        .trim()
-        .toLowerCase();
-
-    if (!domain) return;
-
-    if (!blacklist.includes(domain)) {
-
-      blacklist.push(domain);
-
-      chrome.storage.local.set({
-        blacklist
-      });
-
-      renderDomainLists();
-    }
-
-    blacklistInput.value = '';
-  });
-}
-
-function renderDomainLists() {
-
-  // 완전 초기화
-  whitelistList.replaceChildren();
-  blacklistList.replaceChildren();
-
-  whitelist.forEach(domain => {
-
-    whitelistList.appendChild(
-      createDomainItem(domain, 'white')
-    );
-  });
-
-  blacklist.forEach(domain => {
-
-    blacklistList.appendChild(
-      createDomainItem(domain, 'black')
-    );
-  });
-}
-
-function createDomainItem(domain, type) {
-
-  const div =
-    document.createElement('div');
-
-  div.style.cssText = `
-    display:flex;
-    justify-content:space-between;
-    align-items:center;
-    padding:8px 10px;
-    border-radius:8px;
-    background:var(--bg-secondary);
-    border:1px solid var(--border);
-    font-size:12px;
-    margin-top:6px;
-  `;
-
-  const text =
-    document.createElement('span');
-
-  text.textContent = domain;
-
-  const btn =
-    document.createElement('button');
-
-  btn.textContent = '삭제';
-
-  btn.style.cssText = `
-    border:none;
-    background:none;
-    color:var(--red);
-    cursor:pointer;
-    font-size:12px;
-  `;
-
-  btn.addEventListener('click', () => {
-
-    if (type === 'white') {
-
-      whitelist =
-        whitelist.filter(
-          d => d !== domain
-        );
-
-      chrome.storage.local.set({
-        whitelist
-      }, renderDomainLists);
-
-    } else {
-
-      blacklist =
-        blacklist.filter(
-          d => d !== domain
-        );
-
-      chrome.storage.local.set({
-        blacklist
-      }, renderDomainLists);
-    }
-  });
-
-  div.appendChild(text);
-  div.appendChild(btn);
-
-  return div;
-}
