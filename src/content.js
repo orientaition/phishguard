@@ -23,6 +23,11 @@
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), delay); };
   }
 
+  function afterLoadingPaint(callback) {
+    const raf = window.requestAnimationFrame || ((cb) => setTimeout(cb, 0));
+    raf(() => setTimeout(callback, 0));
+  }
+
   // ══════════════════════════════════════════════
   // 확장 컨텍스트 가드
   // ══════════════════════════════════════════════
@@ -41,6 +46,50 @@
     } catch (_) {}
   }
 
+  function safeStorageSet(items, callback) {
+    if (!isExtensionValid()) return;
+    try {
+      chrome.storage.local.set(items, () => {
+        if (chrome.runtime.lastError) return;
+        if (callback) callback();
+      });
+    } catch (_) {}
+  }
+
+  function normalizeKeyPart(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  function getMailRiskDbKey(item) {
+    const explicitId = normalizeKeyPart(item?.emailId);
+    if (explicitId && explicitId !== 'unknown::(no-subject)') return explicitId;
+
+    const stableId = normalizeKeyPart(item?.stableId);
+    if (stableId) return `row::${stableId}`;
+
+    return getMailRiskTextKey(item);
+  }
+
+  function getMailRiskTextKey(item) {
+    const sender = normalizeKeyPart(item?.senderEmail || item?.sender);
+    const subject = normalizeKeyPart(item?.subject);
+    return `${sender || 'unknown'}::${subject || '(no-subject)'}`;
+  }
+
+  function getMailRiskDbAliases(item) {
+    const aliases = new Set();
+    const primary = getMailRiskDbKey(item);
+    const textKey = getMailRiskTextKey(item);
+
+    if (textKey && textKey !== primary) aliases.add(textKey);
+    (item?.aliases || []).forEach(alias => {
+      const normalized = normalizeKeyPart(alias);
+      if (normalized && normalized !== primary) aliases.add(normalized);
+    });
+
+    return Array.from(aliases);
+  }
+
   // ══════════════════════════════════════════════
   // 상태 변수
   // ══════════════════════════════════════════════
@@ -55,9 +104,20 @@
   let analysisSeq      = 0;
   let metadataSeq      = 0;
   let lastLocationHref = location.href;
+  let toolbarUpdateTimer = null;
+  let riskDataCacheReady = false;
+  let riskDataCacheLoading = false;
+  let pendingRiskDataCallbacks = [];
+  let cachedWhitelist = [];
+  let cachedBlacklist = [];
+  let cachedMailRiskDb = {};
 
   const resultCache  = {};          // { emailId → { result, metadata, _overlayShown } }
   const rowRiskCache = new Map();   // { emailId → { riskLevel, score, indicators } }
+  const MAIL_RISK_DB_KEY = 'mailRiskDb';
+  const MAIL_RISK_DB_LIMIT = 500;
+  const SELECTED_METADATA_BATCH_SIZE = 10;
+  const SELECTED_METADATA_GEMINI_BATCH_SIZE = 80;
 
   const SUSPICIOUS_KEYWORDS = [
     'urgent', 'verify', 'suspended', 'password', 'login',
@@ -100,6 +160,10 @@
   safeStorageGet(['theme'], (data) => {
     currentTheme = data.theme || 'light';
   });
+  loadRiskDataCache(() => {
+    scanInboxRows();
+    updateSelectionToolbarButton();
+  });
 
   // 팝업 메시지 수신
   if (isExtensionValid()) {
@@ -125,26 +189,35 @@
   }
 
   // MutationObserver 시작
-  const observer = new MutationObserver(debounce(onDomChange, 800));
+  const debouncedDomChange = debounce(onDomChange, 800);
+  const observer = new MutationObserver(() => {
+    scanInboxRows();
+    updateSelectionToolbarButton();
+    debouncedDomChange();
+  });
   observer.observe(document.body, { childList: true, subtree: true });
   window.addEventListener('popstate', clearAnalysisUi);
   window.addEventListener('hashchange', clearAnalysisUi);
+  window.addEventListener('focus', refreshInboxBadgesFast);
+  window.addEventListener('pageshow', refreshInboxBadgesFast);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') refreshInboxBadgesFast();
+  });
   document.addEventListener('click', handleNavigationClick, true);
+  document.addEventListener('click', handleSelectionToolbarInteraction, true);
+  document.addEventListener('keyup', handleSelectionToolbarInteraction, true);
   setInterval(checkRouteChange, 500);
 
   // 블랙리스트/화이트리스트 변경 시 inbox row 전체 재스캔
   if (isExtensionValid()) {
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
-      if (changes.blacklist || changes.whitelist) {
+      updateRiskDataCacheFromChanges(changes);
+      if (changes.blacklist || changes.whitelist || changes[MAIL_RISK_DB_KEY]) {
         // 모든 row의 스캔/인터셉트 상태 초기화
-        document.querySelectorAll('tr.zA').forEach(row => {
-          delete row.dataset.pgScanned;
-          delete row.dataset.pgIntercepted;
-          row.querySelector('.pg-inbox-badge')?.remove();
-        });
+        resetInboxScanState();
         // 즉시 재스캔
-        scanInboxRows();
+        refreshInboxBadgesFast();
       }
     });
   }
@@ -157,11 +230,16 @@
     if (!isExtensionValid()) { observer.disconnect(); return; }
 
     scanInboxRows();
+    updateSelectionToolbarButton();
 
     const body     = extractBody();
     const metadata = extractMetadata();
     if (!body) {
-      if (!isGmailMessageRoute()) clearAnalysisUi();
+      if (!isGmailMessageRoute()) {
+        const selectionPanel = document.querySelector('#phishguard-root[data-pg-context="selection"]');
+        if (selectionPanel && getSelectedInboxRows().length > 0) return;
+        clearAnalysisUi();
+      }
       return;
     }
 
@@ -284,73 +362,844 @@
     return getEmailId(extractMetadata()) === getEmailId(metadata);
   }
 
+  function loadRiskDataCache(callback) {
+    if (riskDataCacheReady) {
+      if (callback) callback();
+      return;
+    }
+
+    if (callback) pendingRiskDataCallbacks.push(callback);
+    if (riskDataCacheLoading || !isExtensionValid()) return;
+
+    riskDataCacheLoading = true;
+    safeStorageGet(['whitelist', 'blacklist', MAIL_RISK_DB_KEY], (data) => {
+      cachedWhitelist = normalizeDomainList(data.whitelist);
+      cachedBlacklist = normalizeDomainList(data.blacklist);
+      cachedMailRiskDb = data[MAIL_RISK_DB_KEY] || {};
+      riskDataCacheReady = true;
+      riskDataCacheLoading = false;
+
+      const callbacks = pendingRiskDataCallbacks;
+      pendingRiskDataCallbacks = [];
+      callbacks.forEach(fn => {
+        try { fn(); } catch (_) {}
+      });
+    });
+  }
+
+  function normalizeDomainList(list) {
+    return (list || []).map(e => e.trim().toLowerCase()).filter(Boolean);
+  }
+
+  function updateRiskDataCacheFromChanges(changes) {
+    if (changes.whitelist) cachedWhitelist = normalizeDomainList(changes.whitelist.newValue);
+    if (changes.blacklist) cachedBlacklist = normalizeDomainList(changes.blacklist.newValue);
+    if (changes[MAIL_RISK_DB_KEY]) cachedMailRiskDb = changes[MAIL_RISK_DB_KEY].newValue || {};
+    if (changes.whitelist || changes.blacklist || changes[MAIL_RISK_DB_KEY]) {
+      riskDataCacheReady = true;
+      riskDataCacheLoading = false;
+    }
+  }
+
+  function refreshInboxBadgesFast() {
+    scanInboxRows();
+    updateSelectionToolbarButton();
+  }
+
+  function resetInboxScanState(rows = document.querySelectorAll('tr.zA')) {
+    Array.from(rows).forEach(row => {
+      delete row.dataset.pgScanned;
+      delete row.dataset.pgIntercepted;
+      row.querySelector('.pg-inbox-badge')?.remove();
+    });
+  }
+
+  // ══════════════════════════════════════════════
+  // Gmail 선택 액션바 버튼
+  // ══════════════════════════════════════════════
+
+  function handleSelectionToolbarInteraction(e) {
+    const keyMayChangeSelection = e.type === 'keyup' &&
+      ['x', 'X', ' ', 'Enter', 'ArrowUp', 'ArrowDown'].includes(e.key);
+    const clickMayChangeSelection = e.type === 'click' && e.target?.closest?.(
+      'tr.zA, [role="checkbox"], .T-Jo, [aria-label*="Select"], [data-tooltip*="Select"], [aria-label*="선택"], [data-tooltip*="선택"]'
+    );
+
+    if (!keyMayChangeSelection && !clickMayChangeSelection) return;
+    scheduleSelectionToolbarUpdate();
+  }
+
+  function scheduleSelectionToolbarUpdate() {
+    clearTimeout(toolbarUpdateTimer);
+    toolbarUpdateTimer = setTimeout(updateSelectionToolbarButton, 0);
+  }
+
+  function updateSelectionToolbarButton() {
+    const rows = getSelectedInboxRows();
+    const existing = document.getElementById('pg-native-toolbar-btn');
+
+    if (rows.length === 0) {
+      existing?.remove();
+      return;
+    }
+
+    const anchor = findGmailToolbarAnchor();
+    if (!anchor?.parentElement) {
+      existing?.remove();
+      return;
+    }
+
+    const label = `PhishGuard 선택 메일 검사 (${rows.length})`;
+
+    if (existing && existing.parentElement === anchor.parentElement) {
+      existing.setAttribute('aria-label', label);
+      existing.setAttribute('data-tooltip', label);
+      existing.title = label;
+      syncSelectionToolbarButtonStyle(existing, anchor);
+      return;
+    }
+
+    existing?.remove();
+    anchor.insertAdjacentElement('afterend', createSelectionToolbarButton(rows.length, anchor));
+  }
+
+  function createSelectionToolbarButton(count, anchor) {
+    const label = `PhishGuard 선택 메일 검사 (${count})`;
+    const btn = document.createElement('div');
+    btn.id = 'pg-native-toolbar-btn';
+    const anchorClass = typeof anchor?.className === 'string' ? anchor.className.trim() : '';
+    btn.className = `${anchorClass || 'T-I J-J5-Ji nX T-I-ax7'} pg-native-toolbar-btn`;
+    btn.setAttribute('role', 'button');
+    btn.setAttribute('tabindex', '0');
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('data-tooltip', label);
+    btn.title = label;
+
+    const iconColor = currentTheme === 'dark' ? '#bdc1c6' : '#5f6368';
+    Object.assign(btn.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      color: iconColor,
+      cursor: 'pointer',
+      boxSizing: 'border-box',
+      position: 'static'
+    });
+    syncSelectionToolbarButtonStyle(btn, anchor);
+
+    btn.innerHTML = `
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true"
+           style="display:block;pointer-events:none">
+        <path d="M12 3l7 3v5c0 4.4-2.8 8.4-7 10-4.2-1.6-7-5.6-7-10V6l7-3z"
+              stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+        <path d="M8.7 12.1l2.1 2.1 4.6-5"
+              stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+
+    btn.addEventListener('mouseenter', () => { btn.style.backgroundColor = 'rgba(60,64,67,.08)'; });
+    btn.addEventListener('mouseleave', () => { btn.style.backgroundColor = 'transparent'; });
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showSelectedMailSecurityPanel();
+    });
+    btn.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      showSelectedMailSecurityPanel();
+    });
+
+    return btn;
+  }
+
+  function syncSelectionToolbarButtonStyle(btn, anchor) {
+    if (!btn || !anchor) return;
+
+    const style = getComputedStyle(anchor);
+    const rect = anchor.getBoundingClientRect();
+    const width = rect.width > 0 ? `${rect.width}px` : style.width;
+    const height = rect.height > 0 ? `${rect.height}px` : style.height;
+    const iconColor = currentTheme === 'dark' ? '#bdc1c6' : '#5f6368';
+
+    Object.assign(btn.style, {
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width,
+      height,
+      minWidth: style.minWidth,
+      margin: style.margin,
+      padding: style.padding,
+      border: style.border,
+      borderRadius: style.borderRadius,
+      verticalAlign: style.verticalAlign,
+      lineHeight: style.lineHeight,
+      boxSizing: style.boxSizing,
+      color: style.color || iconColor,
+      position: 'static',
+      top: '',
+      transform: ''
+    });
+  }
+
+  function findGmailToolbarAnchor() {
+    const buttons = Array.from(document.querySelectorAll('[role="button"], button'))
+      .filter(btn => btn.id !== 'pg-native-toolbar-btn' && isVisibleElement(btn));
+
+    const withLabel = buttons.map(btn => ({
+      btn,
+      label: [
+        btn.getAttribute('aria-label'),
+        btn.getAttribute('data-tooltip'),
+        btn.getAttribute('title')
+      ].filter(Boolean).join(' ').trim()
+    })).filter(x => x.label);
+
+    const preferred = withLabel.find(x =>
+      /(Delete|Move to trash|휴지통|삭제)/i.test(x.label)
+    ) || withLabel.find(x =>
+      /(Archive|보관|Report spam|스팸)/i.test(x.label)
+    );
+
+    return preferred?.btn || null;
+  }
+
+  function getSelectedInboxRows() {
+    const rows = Array.from(document.querySelectorAll('tr.zA'));
+    if (isBulkInboxSelectionActive()) return rows;
+
+    return rows.filter(row => {
+      const checkbox = getRowSelectionCheckbox(row);
+      return checkbox?.getAttribute('aria-checked') === 'true';
+    });
+  }
+
+  function isBulkInboxSelectionActive() {
+    const toolbarCheckboxes = Array.from(document.querySelectorAll('[role="checkbox"]'))
+      .filter(cb => !cb.closest('tr.zA') && isVisibleElement(cb));
+
+    return toolbarCheckboxes.some(cb => {
+      const label = [
+        cb.getAttribute('aria-label'),
+        cb.getAttribute('data-tooltip'),
+        cb.getAttribute('title')
+      ].filter(Boolean).join(' ');
+
+      const isSelectAllControl = /(Select|선택|모두)/i.test(label) ||
+        cb.classList.contains('T-Jo');
+
+      return isSelectAllControl && cb.getAttribute('aria-checked') === 'true';
+    });
+  }
+
+  function getRowSelectionCheckbox(row) {
+    return row.querySelector('.T-Jo[role="checkbox"]') ||
+      row.querySelector('[role="checkbox"][aria-label*="Select"]') ||
+      row.querySelector('[role="checkbox"][data-tooltip*="Select"]') ||
+      row.querySelector('[role="checkbox"][aria-label*="선택"]') ||
+      row.querySelector('[role="checkbox"][data-tooltip*="선택"]');
+  }
+
+  function getInboxRowInfo(row) {
+    const senderEl = row.querySelector('span[email]') ||
+      row.querySelector('.yP') ||
+      row.querySelector('.zF') ||
+      row.querySelector('.yW');
+    const subjectEl = row.querySelector('.bog');
+    const senderEmail =
+      senderEl?.getAttribute?.('email') ||
+      row.querySelector('[email]')?.getAttribute('email') ||
+      row.getAttribute('email') ||
+      '';
+    const sender =
+      senderEl?.getAttribute?.('name') ||
+      cleanGmailListText(senderEl) ||
+      cleanGmailListText(row.querySelector('.yX')) ||
+      '';
+    const subject = cleanGmailListText(subjectEl);
+    const stableId = getRowStableId(row);
+    const textKey = getMailRiskTextKey({ senderEmail, sender, subject });
+    const rowKey = stableId ? `row::${normalizeKeyPart(stableId)}` : '';
+
+    return {
+      sender,
+      subject,
+      senderEmail,
+      stableId,
+      emailId: rowKey || textKey,
+      aliases: rowKey ? [textKey] : [],
+      text: `${sender} ${subject}`
+    };
+  }
+
+  function getRowStableId(row) {
+    return row.getAttribute('data-legacy-message-id') ||
+      row.getAttribute('data-legacy-thread-id') ||
+      row.getAttribute('data-thread-id') ||
+      row.getAttribute('data-message-id') ||
+      row.getAttribute('id') ||
+      '';
+  }
+
+  function cleanGmailListText(el) {
+    if (!el) return '';
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll?.('.pg-inbox-badge').forEach(node => node.remove());
+    return stripPhishGuardBadgeText(clone.textContent || '');
+  }
+
+  function stripPhishGuardBadgeText(text) {
+    return String(text || '')
+      .replace(/\s+/g, ' ')
+      .replace(/\s*(미검사|낮음|보통|높음|✕\s*차단)\s*$/g, '')
+      .trim();
+  }
+
+  function getPanelRiskLevel(level) {
+    if (level === 'BLACKLIST' || level === 'HIGH') return 'HIGH';
+    if (level === 'MEDIUM') return 'MEDIUM';
+    return 'LOW';
+  }
+
+  function showSelectedMailSecurityPanel() {
+    const selected = getSelectedInboxRows().map(row => ({ row, ...getInboxRowInfo(row) }));
+
+    if (selected.length === 0) {
+      updateSelectionToolbarButton();
+      return;
+    }
+
+    panelDismissed = false;
+    showPanel('loading', { _selectionPanel: true }, {
+      senderEmail: `${selected.length}개 메일 선택됨`,
+      _selectionPanel: true
+    });
+
+    afterLoadingPaint(() => runSelectedMailMetadataAnalysis(selected));
+  }
+
+  async function runSelectedMailMetadataAnalysis(selected) {
+    const mailRiskDb = await readMailRiskDb();
+    const analyzed = new Array(selected.length);
+    const pending = [];
+
+    selected.forEach((info, selectionIndex) => {
+      const stored = findStoredRiskRecord(mailRiskDb, info);
+      if (stored) {
+        const risk = riskFromStoredRecord(stored);
+        analyzed[selectionIndex] = {
+          ...info,
+          risk,
+          reason: stored.reason || '저장된 검사 결과를 불러왔습니다.',
+          signals: stored.indicators || [],
+          failed: false,
+          cached: true
+        };
+        return;
+      }
+
+      const localRisk = calculateRiskFromText(info);
+      const metadata = {
+        subject: info.subject,
+        sender: info.sender,
+        senderEmail: info.senderEmail,
+        date: ''
+      };
+      pending.push({
+        selectionIndex,
+        requestIndex: pending.length + 1,
+        info,
+        metadata,
+        localRisk
+      });
+    });
+
+    if (pending.length > 0) {
+      const selectedModel = await readSelectedModel();
+      await runSelectedMetadataBatches(analyzed, pending, {
+        selectedCount: selected.length,
+        cachedCount: selected.length - pending.length,
+        selectedModel
+      }, getSelectedMetadataBatchSize(selectedModel, pending.length));
+    }
+
+    const failedCount = analyzed.filter(item => item.failed).length;
+    const cachedCount = analyzed.filter(item => item.cached).length;
+    const savedRecords = analyzed
+      .filter(item => !item.failed && !item.cached)
+      .map(item => toStoredRiskRecord(item, 'metadata'));
+    saveMailRiskRecords(savedRecords, () => {
+      resetInboxScanState();
+      refreshInboxBadgesFast();
+    });
+    analyzed.forEach(item => {
+      if (item.failed || !item.row) return;
+      const risk = item.cached ? item.risk : riskFromStoredRecord(toStoredRiskRecord(item, 'metadata'));
+      rowRiskCache.set(item.emailId, risk);
+      if (item.row.isConnected) {
+        injectInboxBadge(item.row, risk.riskLevel, item.senderEmail, item.subject, risk);
+      }
+    });
+
+    if (failedCount === analyzed.length) {
+      showPanel('error', analyzed[0]?.reason || '선택 메일 검사를 완료하지 못했습니다.', {
+        senderEmail: `${selected.length}개 메일 선택됨`,
+        _selectionPanel: true
+      });
+      return;
+    }
+
+    const counts = analyzed.reduce((acc, item) => {
+      const level = getPanelRiskLevel(item.risk?.riskLevel);
+      acc[level] = (acc[level] || 0) + 1;
+      return acc;
+    }, { HIGH: 0, MEDIUM: 0, LOW: 0 });
+
+    const riskLevel = counts.HIGH > 0 ? 'HIGH' : counts.MEDIUM > 0 ? 'MEDIUM' : 'LOW';
+    const confidence = Math.round(
+      analyzed.reduce((sum, item) => sum + Number(item.risk?.confidence || 70), 0) / analyzed.length
+    );
+    const suspiciousItems = analyzed
+      .filter(item => getPanelRiskLevel(item.risk?.riskLevel) !== 'LOW')
+      .slice(0, 8)
+      .map(item => {
+        const level = getPanelRiskLevel(item.risk?.riskLevel);
+        const signals = (item.signals || []).slice(0, 2).join(' / ');
+        return {
+          level,
+          title: `${item.subject || '(제목 없음)'} · ${item.senderEmail || item.sender || '(발신자 없음)'}`,
+          detail: item.reason || signals || '제목과 발신자 기준으로 의심 요소가 확인되었습니다.'
+        };
+      });
+    const topIndicators = [...new Set(suspiciousItems.map(item => item.detail))].slice(0, 6);
+    const checklist = [];
+
+    const summary =
+      `선택한 ${selected.length}개 메일을 본문과 미리보기 없이 제목과 발신자 기준으로 검사했습니다. ` +
+      `높음 ${counts.HIGH}개, 보통 ${counts.MEDIUM}개, 낮음 ${counts.LOW}개로 분류되었습니다. ` +
+      `${cachedCount ? `이미 검사된 ${cachedCount}개 메일은 저장된 결과를 사용했습니다. ` : ''}` +
+      `${failedCount ? `일부 ${failedCount}개 메일은 AI 응답을 받지 못해 로컬 사전검사 결과를 함께 표시했습니다. ` : ''}` +
+      `의심 메일은 열어서 개인정보 전송 동의 후 정밀 분석을 진행해 주세요.`;
+
+    showPanel('result', {
+      riskLevel,
+      confidence,
+      summary,
+      checklist,
+      suspiciousItems,
+      indicators: topIndicators,
+      _skipOverlay: true,
+      _selectionPanel: true
+    }, {
+      senderEmail: `${selected.length}개 메일 선택됨`,
+      _selectionPanel: true
+    });
+  }
+
+  function requestSelectedMetadataAnalysis(metadata, preRisk) {
+    return new Promise(resolve => {
+      if (!isExtensionValid()) {
+        resolve({ ok: false, error: '확장 프로그램을 새로고침해주세요.' });
+        return;
+      }
+
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'ANALYZE_METADATA', payload: { metadata, preRisk } },
+          (response) => {
+            if (!isExtensionValid() || chrome.runtime.lastError) {
+              resolve({
+                ok: false,
+                error: chrome.runtime.lastError?.message || '확장 프로그램을 새로고침해주세요.'
+              });
+              return;
+            }
+            if (!response?.ok) {
+              resolve({ ok: false, error: response?.error || '알 수 없는 오류' });
+              return;
+            }
+            resolve({ ok: true, result: response.result });
+          }
+        );
+      } catch (_) {
+        resolve({ ok: false, error: '선택 메일 검사를 시작하지 못했습니다.' });
+      }
+    });
+  }
+
+  async function runSelectedMetadataBatches(analyzed, pending, context, batchSize) {
+    const chunks = chunkArray(pending, batchSize);
+
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i];
+      const baseContext = {
+        ...context,
+        batchNumber: i + 1,
+        batchCount: chunks.length,
+        batchSize,
+        batchStartIndex: chunk[0]?.requestIndex,
+        batchEndIndex: chunk[chunk.length - 1]?.requestIndex
+      };
+
+      const response = await requestSelectedMetadataBatchWithRetry(chunk, baseContext);
+
+      if (!response.ok) {
+        markSelectedMetadataFailed(analyzed, chunk, response.error || '제목과 발신자 기반 AI 배치 검사를 완료하지 못했습니다.');
+      } else {
+        const missing = applySelectedMetadataBatchResults(analyzed, chunk, response.results || []);
+
+        if (missing.length > 0) {
+          const retryResponse = await requestSelectedMetadataBatchWithRetry(missing, {
+            ...baseContext,
+            retryMissing: true
+          });
+
+          if (retryResponse.ok) {
+            const stillMissing = applySelectedMetadataBatchResults(analyzed, missing, retryResponse.results || []);
+            markSelectedMetadataFailed(
+              analyzed,
+              stillMissing,
+              'AI 배치 응답에서 이 메일의 결과가 누락되어 로컬 사전검사 결과를 표시했습니다.'
+            );
+          } else {
+            markSelectedMetadataFailed(
+              analyzed,
+              missing,
+              retryResponse.error || 'AI 배치 응답에서 누락된 메일을 재검사하지 못했습니다.'
+            );
+          }
+        }
+      }
+
+      if (i < chunks.length - 1) {
+        await delay(250);
+      }
+    }
+  }
+
+  async function requestSelectedMetadataBatchWithRetry(chunk, context) {
+    const response = await requestSelectedMetadataBatchAnalysis(
+      chunk.map(toMetadataBatchPayload),
+      context
+    );
+
+    if (response.ok || !shouldRetryBatchError(response.error)) return response;
+
+    await delay(1500);
+    return requestSelectedMetadataBatchAnalysis(
+      chunk.map(toMetadataBatchPayload),
+      { ...context, retryAfterError: true }
+    );
+  }
+
+  function toMetadataBatchPayload(item) {
+    return {
+      index: item.requestIndex,
+      metadata: item.metadata,
+      preRisk: item.localRisk
+    };
+  }
+
+  function applySelectedMetadataBatchResults(analyzed, chunk, results) {
+    const resultByIndex = new Map(
+      (results || []).map(result => [Number(result.index), result])
+    );
+    const missing = [];
+
+    chunk.forEach(item => {
+      const metaRisk = resultByIndex.get(item.requestIndex);
+
+      if (!metaRisk) {
+        missing.push(item);
+        return;
+      }
+
+      analyzed[item.selectionIndex] = {
+        ...item.info,
+        risk: {
+          riskLevel: metaRisk.riskLevel || item.localRisk.riskLevel,
+          confidence: Number(metaRisk.confidence || 70),
+          indicators: metaRisk.signals || item.localRisk.indicators || []
+        },
+        reason: metaRisk.reason || '제목과 발신자 기준으로 뚜렷한 추가 위험 신호는 확인되지 않았습니다.',
+        signals: metaRisk.signals || item.localRisk.indicators || [],
+        failed: false
+      };
+    });
+
+    return missing;
+  }
+
+  function markSelectedMetadataFailed(analyzed, items, reason) {
+    items.forEach(item => {
+      analyzed[item.selectionIndex] = {
+        ...item.info,
+        risk: item.localRisk,
+        reason,
+        signals: item.localRisk.indicators || [],
+        failed: true
+      };
+    });
+  }
+
+  function shouldRetryBatchError(error) {
+    return /429|rate|limit|timeout|503|502|500/i.test(String(error || ''));
+  }
+
+  function getSelectedMetadataBatchSize(model, pendingCount) {
+    if (model === 'gemini') {
+      return Math.min(SELECTED_METADATA_GEMINI_BATCH_SIZE, Math.max(1, pendingCount));
+    }
+    return SELECTED_METADATA_BATCH_SIZE;
+  }
+
+  function readSelectedModel() {
+    return new Promise(resolve => {
+      if (!isExtensionValid()) {
+        resolve('groq');
+        return;
+      }
+
+      try {
+        chrome.storage.local.get(['selectedModel'], (data) => {
+          if (chrome.runtime.lastError) {
+            resolve('groq');
+            return;
+          }
+          resolve(data.selectedModel || 'groq');
+        });
+      } catch (_) {
+        resolve('groq');
+      }
+    });
+  }
+
+  function chunkArray(items, size) {
+    const chunks = [];
+    for (let i = 0; i < items.length; i += size) {
+      chunks.push(items.slice(i, i + size));
+    }
+    return chunks;
+  }
+
+  function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  function requestSelectedMetadataBatchAnalysis(items, context = {}) {
+    return new Promise(resolve => {
+      if (!isExtensionValid()) {
+        resolve({ ok: false, error: '확장 프로그램을 새로고침해주세요.' });
+        return;
+      }
+
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'ANALYZE_METADATA_BATCH', payload: { items, context } },
+          (response) => {
+            if (!isExtensionValid() || chrome.runtime.lastError) {
+              resolve({
+                ok: false,
+                error: chrome.runtime.lastError?.message || '확장 프로그램을 새로고침해주세요.'
+              });
+              return;
+            }
+            if (!response?.ok) {
+              resolve({ ok: false, error: response?.error || '알 수 없는 오류' });
+              return;
+            }
+            resolve({
+              ok: true,
+              results: Array.isArray(response.result?.results) ? response.result.results : []
+            });
+          }
+        );
+      } catch (_) {
+        resolve({ ok: false, error: '선택 메일 배치 검사를 시작하지 못했습니다.' });
+      }
+    });
+  }
+
+  function findStoredRiskRecord(db, item) {
+    const keys = [
+      item?.emailId,
+      getMailRiskDbKey(item),
+      getMailRiskTextKey(item),
+      ...(item?.aliases || [])
+    ].map(normalizeKeyPart).filter(Boolean);
+
+    for (const key of [...new Set(keys)]) {
+      if (db[key]) return db[key];
+    }
+    return null;
+  }
+
+  async function mapWithConcurrency(items, limit, worker) {
+    const results = new Array(items.length);
+    let nextIndex = 0;
+
+    async function runNext() {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex++;
+        results[currentIndex] = await worker(items[currentIndex], currentIndex);
+      }
+    }
+
+    const workers = Array.from(
+      { length: Math.min(limit, items.length) },
+      runNext
+    );
+    await Promise.all(workers);
+    return results;
+  }
+
+  function readMailRiskDb() {
+    return new Promise(resolve => {
+      if (riskDataCacheReady) {
+        resolve(cachedMailRiskDb);
+        return;
+      }
+      if (!isExtensionValid()) {
+        resolve({});
+        return;
+      }
+      safeStorageGet([MAIL_RISK_DB_KEY], (data) => {
+        resolve(data[MAIL_RISK_DB_KEY] || {});
+      });
+    });
+  }
+
+  function toStoredRiskRecord(item, source) {
+    const risk = item?.risk || {};
+    const indicators = item?.signals || risk.indicators || item?.indicators || [];
+    return {
+      key: getMailRiskDbKey(item),
+      aliases: getMailRiskDbAliases(item),
+      subject: item?.subject || '',
+      sender: item?.sender || '',
+      senderEmail: item?.senderEmail || '',
+      riskLevel: normalizeRiskLevel(risk.riskLevel || item?.riskLevel),
+      confidence: Number(risk.confidence ?? item?.confidence ?? risk.score ?? 70),
+      reason: item?.reason || item?.summary || '',
+      indicators,
+      source,
+      checkedAt: Date.now()
+    };
+  }
+
+  function normalizeRiskLevel(level) {
+    if (level === 'BLACKLIST' || level === 'HIGH') return 'HIGH';
+    if (level === 'MEDIUM') return 'MEDIUM';
+    return 'LOW';
+  }
+
+  function riskFromStoredRecord(record) {
+    return {
+      riskLevel: normalizeRiskLevel(record?.riskLevel),
+      confidence: Number(record?.confidence || 70),
+      score: Number(record?.confidence || 70),
+      indicators: record?.indicators || [],
+      reason: record?.reason || '',
+      checkedAt: record?.checkedAt
+    };
+  }
+
+  function saveMailRiskRecords(records, callback) {
+    const validRecords = records.filter(record => record?.key);
+    if (validRecords.length === 0) {
+      if (callback) callback();
+      return;
+    }
+
+    safeStorageGet([MAIL_RISK_DB_KEY], (data) => {
+      const db = data[MAIL_RISK_DB_KEY] || {};
+      validRecords.forEach(record => {
+        db[record.key] = record;
+        (record.aliases || []).forEach(alias => {
+          db[alias] = record;
+        });
+      });
+      pruneMailRiskDb(db);
+      cachedMailRiskDb = db;
+      riskDataCacheReady = true;
+      safeStorageSet({ [MAIL_RISK_DB_KEY]: db }, callback);
+    });
+  }
+
+  function pruneMailRiskDb(db) {
+    const entries = Object.entries(db);
+    if (entries.length <= MAIL_RISK_DB_LIMIT) return;
+
+    entries
+      .sort((a, b) => Number(b[1]?.checkedAt || 0) - Number(a[1]?.checkedAt || 0))
+      .slice(MAIL_RISK_DB_LIMIT)
+      .forEach(([key]) => { delete db[key]; });
+  }
+
   // ══════════════════════════════════════════════
   // Inbox 사전 분석
   // ══════════════════════════════════════════════
 
   // ── storage를 한 번만 읽고 모든 row를 처리 ──
   function scanInboxRows() {
+    if (!riskDataCacheReady) {
+      loadRiskDataCache(scanInboxRows);
+      return;
+    }
+
     const rows = Array.from(document.querySelectorAll('tr.zA'))
-      .filter(row => !row.dataset.pgScanned);
+      .filter(row => !row.dataset.pgScanned || !row.querySelector('.pg-inbox-badge'));
 
     if (rows.length === 0) return;
 
-    safeStorageGet(['whitelist', 'blacklist'], (data) => {
-      const whitelist = (data.whitelist || []).map(e => e.trim().toLowerCase());
-      const blacklist = (data.blacklist || []).map(e => e.trim().toLowerCase());
+    rows.forEach(row => {
+      row.dataset.pgScanned = '1';
 
-      rows.forEach(row => {
-        // 이미 처리된 row 방지 (비동기 사이에 중복 가능)
-        if (row.dataset.pgScanned) return;
-        row.dataset.pgScanned = '1';
+      const info       = getInboxRowInfo(row);
+      const emailId    = info.emailId;
+      const emailLower = info.senderEmail.toLowerCase();
+      const domain     = emailLower.split('@')[1] || '';
 
-        const sender      = row.querySelector('.yP')?.innerText  || '';
-        const subject     = row.querySelector('.bog')?.innerText || '';
-        const preview     = row.querySelector('.y2')?.innerText  || '';
-        const senderEmail =
-          row.querySelector('span[email]')?.getAttribute('email') ||
-          row.querySelector('[email]')?.getAttribute('email')     ||
-          row.getAttribute('email')                               ||
-          '';
+      // 화이트/블랙리스트 매칭 — 도메인 또는 전체 이메일 둘 다 허용
+      const matchList  = (list) => list.some(entry =>
+        entry === emailLower ||
+        entry === domain     ||
+        domain.endsWith('.' + entry) // 서브도메인도 매칭: mail.anthropic.com → anthropic.com
+      );
 
-        const text       = `${sender} ${subject} ${preview}`;
-        const emailId    = senderEmail.trim();
-        const emailLower = senderEmail.toLowerCase();
-        const domain     = emailLower.split('@')[1] || '';
+      const inWhitelist = matchList(cachedWhitelist);
+      const inBlacklist = matchList(cachedBlacklist);
 
-        // 화이트/블랙리스트 매칭 — 도메인 또는 전체 이메일 둘 다 허용
-        const matchList  = (list) => list.some(entry =>
-          entry === emailLower ||
-          entry === domain     ||
-          domain.endsWith('.' + entry) // 서브도메인도 매칭: mail.anthropic.com → anthropic.com
-        );
+      if (inWhitelist) {
+        const r = { riskLevel: 'SAFE', score: 0, indicators: [] };
+        rowRiskCache.set(emailId, r);
+        injectInboxBadge(row, 'SAFE', info.senderEmail, info.subject, r);
+        return;
+      }
 
-        const inWhitelist = matchList(whitelist);
-        const inBlacklist = matchList(blacklist);
+      if (inBlacklist) {
+        const r = { riskLevel: 'BLACKLIST', score: 100, indicators: ['블랙리스트 등록 발신자'] };
+        rowRiskCache.set(emailId, r);
+        injectInboxBadge(row, 'BLACKLIST', info.senderEmail, info.subject, r);
+        attachClickInterceptor(row, info.senderEmail, info.subject, r);
+        return;
+      }
 
-        if (inWhitelist) {
-          const r = { riskLevel: 'SAFE', score: 0, indicators: [] };
-          rowRiskCache.set(emailId, r);
-          injectInboxBadge(row, 'SAFE', senderEmail, subject, r);
-          return;
-        }
+      const stored = findStoredRiskRecord(cachedMailRiskDb, info);
+      if (!stored) {
+        rowRiskCache.delete(emailId);
+        injectInboxBadge(row, 'UNCHECKED', info.senderEmail, info.subject, {
+          indicators: ['아직 검사하지 않은 메일입니다. 선택 후 PhishGuard 버튼으로 검사할 수 있습니다.']
+        });
+        return;
+      }
 
-        if (inBlacklist) {
-          const r = { riskLevel: 'BLACKLIST', score: 100, indicators: ['블랙리스트 등록 발신자'] };
-          rowRiskCache.set(emailId, r);
-          injectInboxBadge(row, 'BLACKLIST', senderEmail, subject, r);
-          attachClickInterceptor(row, senderEmail, subject, r);
-          return;
-        }
-
-        const risk = calculateRiskFromText({ senderEmail, subject, sender, text });
-        rowRiskCache.set(emailId, risk);
-        injectInboxBadge(row, risk.riskLevel, senderEmail, subject, risk);
-
-        if (risk.riskLevel === 'HIGH') {
-          attachClickInterceptor(row, senderEmail, subject, risk);
-        }
-      });
+      const risk = riskFromStoredRecord(stored);
+      rowRiskCache.set(emailId, risk);
+      injectInboxBadge(row, risk.riskLevel, info.senderEmail, info.subject, risk);
+      if (risk.riskLevel === 'HIGH') {
+        attachClickInterceptor(row, info.senderEmail, info.subject, risk);
+      }
     });
   }
 
@@ -583,9 +1432,7 @@
   }
 
   function getEmailId(metadata) {
-    const senderEmail = metadata?.senderEmail?.trim();
-    if (senderEmail) return senderEmail;
-    return `${metadata?.sender || ''}::${metadata?.subject || ''}`.trim();
+    return getMailRiskDbKey(metadata);
   }
 
   // ══════════════════════════════════════════════
@@ -599,6 +1446,7 @@
     if (isMetadataChecking) return;
 
     isMetadataChecking = true;
+    showPanel('loading', null, metadata);
     const seq = ++metadataSeq;
     const fallbackTimer = setTimeout(() => {
       if (seq === metadataSeq && isMetadataChecking && isCurrentEmailView(metadata)) {
@@ -611,36 +1459,57 @@
       subject: metadata.subject,
       preRisk
     });
-    try {
-      chrome.runtime.sendMessage(
-        { type: 'ANALYZE_METADATA', payload: { metadata, preRisk } },
-        (response) => {
-          if (seq !== metadataSeq) return;
-          clearTimeout(fallbackTimer);
-          isMetadataChecking = false;
-          if (!isExtensionValid() || chrome.runtime.lastError) {
-            console.debug('[PhishGuard] metadata precheck runtime error', chrome.runtime.lastError?.message);
-            if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
-            return;
-          }
-          if (!response?.ok) {
-            console.debug('[PhishGuard] metadata precheck failed', response?.error);
-            if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
-            return;
-          }
+    afterLoadingPaint(() => {
+      if (seq !== metadataSeq || !isMetadataChecking) return;
+      if (!isCurrentEmailView(metadata)) {
+        clearTimeout(fallbackTimer);
+        isMetadataChecking = false;
+        return;
+      }
 
-          const metaRisk = response.result;
-          console.debug('[PhishGuard] metadata precheck result', metaRisk);
-          if (!isCurrentEmailView(metadata)) return;
-          showContentConsentPanel(metadata, preRisk, metaRisk);
-        }
-      );
-    } catch (_) {
-      if (seq !== metadataSeq) return;
-      clearTimeout(fallbackTimer);
-      isMetadataChecking = false;
-      if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
-    }
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'ANALYZE_METADATA', payload: { metadata, preRisk } },
+          (response) => {
+            if (seq !== metadataSeq) return;
+            clearTimeout(fallbackTimer);
+            isMetadataChecking = false;
+            if (!isExtensionValid() || chrome.runtime.lastError) {
+              console.debug('[PhishGuard] metadata precheck runtime error', chrome.runtime.lastError?.message);
+              if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
+              return;
+            }
+            if (!response?.ok) {
+              console.debug('[PhishGuard] metadata precheck failed', response?.error);
+              if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
+              return;
+            }
+
+            const metaRisk = response.result;
+            console.debug('[PhishGuard] metadata precheck result', metaRisk);
+            saveMailRiskRecords([
+              toStoredRiskRecord({
+                ...metadata,
+                risk: {
+                  riskLevel: metaRisk?.riskLevel,
+                  confidence: metaRisk?.confidence,
+                  indicators: metaRisk?.signals || []
+                },
+                reason: metaRisk?.reason,
+                signals: metaRisk?.signals || []
+              }, 'metadata')
+            ]);
+            if (!isCurrentEmailView(metadata)) return;
+            showContentConsentPanel(metadata, preRisk, metaRisk);
+          }
+        );
+      } catch (_) {
+        if (seq !== metadataSeq) return;
+        clearTimeout(fallbackTimer);
+        isMetadataChecking = false;
+        if (isCurrentEmailView(metadata)) showContentConsentPanel(metadata, preRisk);
+      }
+    });
   }
 
   // ══════════════════════════════════════════════
@@ -659,35 +1528,51 @@
       return;
     }
 
-    try {
-      chrome.runtime.sendMessage(
-        { type: 'ANALYZE_EMAIL', payload: { body, metadata } },
-        (response) => {
-          if (seq !== analysisSeq) return;
-          isAnalyzing = false;
-          if (!isExtensionValid() || chrome.runtime.lastError) {
-            if (!isCurrentEmailView(metadata)) return;
-            showPanel('error',
-              chrome.runtime.lastError?.message || '확장 프로그램을 새로고침해주세요.',
-              metadata);
-            return;
-          }
-          if (!response?.ok) {
-            if (!isCurrentEmailView(metadata)) return;
-            showPanel('error', response?.error || '알 수 없는 오류', metadata);
-            return;
-          }
-          try { chrome.runtime.sendMessage({ type: 'UPDATE_STATS', level: response.result.riskLevel }); } catch (_) {}
-          resultCache[analysisEmailId] = { result: response.result, metadata };
-          if (!isCurrentEmailView(metadata)) return;
-          showPanel('result', response.result, metadata);
-        }
-      );
-    } catch (_) {
+    afterLoadingPaint(() => {
       if (seq !== analysisSeq) return;
-      isAnalyzing = false;
-      showPanel('error', '페이지를 새로고침해주세요.', metadata);
-    }
+      if (!isCurrentEmailView(metadata)) {
+        isAnalyzing = false;
+        return;
+      }
+
+      try {
+        chrome.runtime.sendMessage(
+          { type: 'ANALYZE_EMAIL', payload: { body, metadata } },
+          (response) => {
+            if (seq !== analysisSeq) return;
+            isAnalyzing = false;
+            if (!isExtensionValid() || chrome.runtime.lastError) {
+              if (!isCurrentEmailView(metadata)) return;
+              showPanel('error',
+                chrome.runtime.lastError?.message || '확장 프로그램을 새로고침해주세요.',
+                metadata);
+              return;
+            }
+            if (!response?.ok) {
+              if (!isCurrentEmailView(metadata)) return;
+              showPanel('error', response?.error || '알 수 없는 오류', metadata);
+              return;
+            }
+            try { chrome.runtime.sendMessage({ type: 'UPDATE_STATS', level: response.result.riskLevel }); } catch (_) {}
+            resultCache[analysisEmailId] = { result: response.result, metadata };
+            saveMailRiskRecords([
+              toStoredRiskRecord({
+                ...metadata,
+                risk: response.result,
+                summary: response.result?.summary,
+                indicators: response.result?.indicators || []
+              }, 'full')
+            ]);
+            if (!isCurrentEmailView(metadata)) return;
+            showPanel('result', response.result, metadata);
+          }
+        );
+      } catch (_) {
+        if (seq !== analysisSeq) return;
+        isAnalyzing = false;
+        showPanel('error', '페이지를 새로고침해주세요.', metadata);
+      }
+    });
   }
 
   // ══════════════════════════════════════════════
@@ -781,6 +1666,7 @@
   }
   function showContentConsentPanel(metadata, preRisk, metaRisk) {
     document.getElementById('phishguard-consent')?.remove();
+    document.getElementById('phishguard-root')?.remove();
 
     const riskLevel = preRisk?.riskLevel || 'UNKNOWN';
     const indicators = preRisk?.indicators || [];
@@ -871,9 +1757,12 @@
 
   function showPanel(status, data, metadata) {
     document.getElementById('phishguard-root')?.remove();
+    const selectionContext =
+      (typeof data === 'object' && !!data?._selectionPanel) ||
+      !!metadata?._selectionPanel;
 
     // HIGH → 오버레이 (최초 1회)
-    if (status === 'result' && data?.riskLevel === 'HIGH') {
+    if (status === 'result' && data?.riskLevel === 'HIGH' && !data?._skipOverlay) {
       if (!resultCache[lastAnalyzedId]) resultCache[lastAnalyzedId] = {};
       if (!resultCache[lastAnalyzedId]._overlayShown) {
         showOverlay(metadata, 'HIGH');
@@ -890,6 +1779,7 @@
 
     const panel = document.createElement('div');
     panel.id = 'phishguard-root';
+    if (selectionContext) panel.dataset.pgContext = 'selection';
     Object.assign(panel.style, {
       position: 'fixed', width: '340px', maxHeight: 'calc(100vh - 88px)',
       overflowY: 'auto', zIndex: '2147483647',
@@ -1082,6 +1972,39 @@
                           border-radius:6px;margin-bottom:4px">${esc(x)}</div>`).join('')}
          </div>` : '';
 
+    const selectionIssues = r._selectionPanel
+      ? `<div style="padding:12px 16px 4px">
+           <div style="font-size:11px;font-weight:500;color:${T.text2};text-transform:uppercase;
+                       letter-spacing:.05em;margin-bottom:8px">의심 항목</div>
+           ${(r.suspiciousItems || []).length
+             ? r.suspiciousItems.map(item => {
+                 const issueHigh = item.level === 'HIGH';
+                 const issueColor = issueHigh ? T.red : T.yellow;
+                 const issueBg = issueHigh ? T.redBg : T.yellowBg;
+                 return `<div style="background:${issueBg};border-radius:8px;padding:10px 12px;margin-bottom:6px">
+                   <div style="font-size:12px;color:${issueColor};font-weight:600;line-height:1.5">
+                     ${esc(issueHigh ? '높음' : '보통')} · ${esc(item.title || '(제목 없음)')}
+                   </div>
+                   <div style="font-size:12px;color:${T.text2};line-height:1.6;margin-top:4px">
+                     ${esc(item.detail || '제목과 발신자 기준으로 의심 요소가 확인되었습니다.')}
+                   </div>
+                 </div>`;
+               }).join('')
+             : `<div style="font-size:12px;color:${T.text2};padding:10px 12px;background:${T.bg2};
+                         border-radius:8px">현재 제목과 발신자 기준으로 표시할 의심 항목은 없습니다.</div>`}
+         </div>`
+      : '';
+
+    const checklistSection = r._selectionPanel
+      ? selectionIssues
+      : `<div style="padding:12px 16px 4px">
+          <div style="font-size:11px;font-weight:500;color:${T.text2};text-transform:uppercase;
+                      letter-spacing:.05em;margin-bottom:6px">판단 체크리스트</div>
+          ${checklist}
+        </div>`;
+
+    const indicatorSection = r._selectionPanel ? '' : indicators;
+
     return wrap(`
       <div>
         <div style="margin:14px 14px 0;padding:14px 16px;background:${bg};border-radius:10px;
@@ -1112,12 +2035,8 @@
               ${esc(metadata?.senderEmail||'(알 수 없음)')}</div>
           </div>
         </div>
-        <div style="padding:12px 16px 4px">
-          <div style="font-size:11px;font-weight:500;color:${T.text2};text-transform:uppercase;
-                      letter-spacing:.05em;margin-bottom:6px">판단 체크리스트</div>
-          ${checklist}
-        </div>
-        ${indicators}
+        ${checklistSection}
+        ${indicatorSection}
         <div style="padding:10px 16px;border-top:1px solid ${T.borderLight};
                     font-size:11px;color:${T.muted};text-align:center">
           최종 판단은 사용자에게 있습니다 · PhishGuard AI</div>
@@ -1133,16 +2052,14 @@
 
     // 위험도별 설정
     const CONFIG = {
-      SAFE     : { bg: '#e6f4ea', color: '#137333', border: '#b7dfbf', label: '✓ 신뢰', dot: '#34a853' },
-      LOW      : { bg: '#e8f0fe', color: '#1557b0', border: '#bdd2f8', label: '● 낮음', dot: '#4285f4' },
-      MEDIUM   : { bg: '#fef7e0', color: '#7d4e00', border: '#f9e4a0', label: '● 주의', dot: '#f9ab00' },
-      HIGH     : { bg: '#fce8e6', color: '#c5221f', border: '#f5c6c2', label: '▲ 위험', dot: '#ea4335' },
+      UNCHECKED: { bg: '#f1f3f4', color: '#5f6368', border: '#dadce0', label: '미검사', dot: '#9aa0a6' },
+      SAFE     : { bg: '#e6f4ea', color: '#137333', border: '#b7dfbf', label: '낮음', dot: '#34a853' },
+      LOW      : { bg: '#e8f0fe', color: '#1557b0', border: '#bdd2f8', label: '낮음', dot: '#4285f4' },
+      MEDIUM   : { bg: '#fef7e0', color: '#7d4e00', border: '#f9e4a0', label: '보통', dot: '#f9ab00' },
+      HIGH     : { bg: '#fce8e6', color: '#c5221f', border: '#f5c6c2', label: '높음', dot: '#ea4335' },
       BLACKLIST: { bg: '#3c0000', color: '#ffcdd2', border: '#b71c1c', label: '✕ 차단', dot: '#ff5252' }
     };
-    const c = CONFIG[risk] || CONFIG.MEDIUM;
-
-    // 신뢰도 점수 텍스트 (0~100)
-    const score = riskData?.score ?? 0;
+    const c = CONFIG[risk] || CONFIG.UNCHECKED;
 
     const badge = document.createElement('div');
     badge.className = 'pg-inbox-badge';
@@ -1169,8 +2086,7 @@
       ...(riskData?.indicators || []).slice(0, 3)
     ].filter(Boolean).join('\n');
 
-    // 배지를 발신자 이름 뒤에 삽입
-    // .yX = sender cell, .bA4 = subject cell 등 위치 후보
+    // 배지를 발신자 이름 뒤에 우선 삽입
     const senderCell = row.querySelector('.yX') || row.querySelector('.yW') || row.querySelector('.bA4');
     const subjectCell = row.querySelector('.bog')?.parentElement;
     const target = senderCell || subjectCell || row.querySelector('.xY');

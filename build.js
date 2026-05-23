@@ -8,7 +8,11 @@ fs.mkdirSync(dist)
 const files = [
   ['manifest.json',     'manifest.json'],
   ['popup.html',        'popup.html'],
+  ['logs.html',         'logs.html'],
+  ['domains.html',      'domains.html'],
   ['src/popup.js',      'popup.js'],
+  ['src/logs.js',       'logs.js'],
+  ['src/domains.js',    'domains.js'],
   ['src/background.js', 'background.js'],
   ['src/content.js',    'content.js'],
 ]
