@@ -5,8 +5,10 @@ const apiInput = document.getElementById('api-input');
 const eyeBtn = document.getElementById('eye-btn');
 const eyeIcon = document.getElementById('eye-icon');
 const keyStatus = document.getElementById('key-status');
+const apiLabel = document.getElementById('api-label');
 const btnSave = document.getElementById('btn-save');
 const btnClear = document.getElementById('btn-clear');
+const btnTestApi = document.getElementById('btn-test-api');
 const btnReset = document.getElementById('btn-reset');
 const btnLogs = document.getElementById('btn-logs');
 const btnDomains = document.getElementById('btn-domains');
@@ -97,12 +99,26 @@ chrome.storage.local.get(['apiKeys', 'selectedModel', 'groqApiKey', 'stats'], (d
 // ── 모델 변경 ──────────────────────────────────────────────────────────
 function loadKeyForSelectedModel() {
   const model = modelSelect.value;
+  const isLocalModel = model === 'ollama';
   const key = apiKeys[model];
-  if (key) {
+
+  if (apiLabel) apiLabel.textContent = isLocalModel ? '로컬 모델' : 'API 키';
+
+  if (isLocalModel) {
+    apiInput.value = 'http://localhost:11434 · qwen3.5:9b';
+    apiInput.disabled = true;
+    if (eyeBtn) eyeBtn.style.display = 'none';
+    setKeyStatus(true, model);
+    setActiveBadge(true);
+  } else if (key) {
+    apiInput.disabled = false;
+    if (eyeBtn) eyeBtn.style.display = '';
     apiInput.value = key;
     setKeyStatus(true, model);
     setActiveBadge(true);
   } else {
+    apiInput.disabled = false;
+    if (eyeBtn) eyeBtn.style.display = '';
     apiInput.value = '';
     setKeyStatus(false, model);
     setActiveBadge(false);
@@ -162,6 +178,31 @@ if (btnSave) {
     const model =
       modelSelect.value;
 
+    if (model === 'ollama') {
+      chrome.storage.local.set(
+        { selectedModel: model },
+        () => {
+
+          setKeyStatus(true, model);
+          setActiveBadge(true);
+
+          btnSave.textContent =
+            '✓ 저장됨';
+
+          btnSave.classList.add('saved');
+          setTimeout(() => {
+
+            btnSave.textContent =
+              '저장';
+
+            btnSave.classList.remove('saved');
+
+          }, 2000);
+        }
+      );
+      return;
+    }
+
     if (!key) {
       keyStatus.textContent =
         '⚠ 키를 입력해주세요';
@@ -204,7 +245,7 @@ if (btnSave) {
 // ── Enter 키로 저장 ───────────────────────────────────────────────────
 if (apiInput) {
   apiInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !apiInput.disabled) {
       btnSave.click();
     }
   });
@@ -215,6 +256,17 @@ if (btnClear) {
   btnClear.addEventListener('click', () => {
     const model =
       modelSelect.value;
+
+    if (model === 'ollama') {
+      chrome.storage.local.set(
+        { selectedModel: model },
+        () => {
+
+          loadKeyForSelectedModel();
+        }
+      );
+      return;
+    }
 
     delete apiKeys[model];
 
@@ -250,6 +302,49 @@ if (btnReset) {
         document.getElementById('s-medium').textContent = 0;
         document.getElementById('s-low').textContent = 0;
         document.getElementById('s-total').textContent = 0;
+      }
+    );
+  });
+}
+
+// ── API 연결 테스트 ─────────────────────────────────────────────────
+if (btnTestApi) {
+  btnTestApi.addEventListener('click', () => {
+    const model = modelSelect.value;
+    const key = model === 'ollama' ? '' : apiInput.value.trim();
+
+    btnTestApi.disabled = true;
+    btnTestApi.textContent = '테스트 중...';
+    keyStatus.textContent = 'API 연결을 테스트하는 중입니다...';
+    keyStatus.className = 'key-status';
+
+    chrome.runtime.sendMessage(
+      {
+        type: 'TEST_API',
+        payload: {
+          model,
+          apiKey: key
+        }
+      },
+      (response) => {
+        btnTestApi.disabled = false;
+        btnTestApi.textContent = 'API 테스트';
+
+        if (chrome.runtime.lastError) {
+          keyStatus.textContent = `테스트 실패 · ${chrome.runtime.lastError.message}`;
+          keyStatus.className = 'key-status err';
+          return;
+        }
+
+        if (response?.ok) {
+          keyStatus.textContent = `✓ 테스트 성공 · ${response.provider || model}`;
+          keyStatus.className = 'key-status ok';
+          setActiveBadge(true);
+        } else {
+          keyStatus.textContent = `테스트 실패 · ${response?.error || '응답 없음'}`;
+          keyStatus.className = 'key-status err';
+          if (model !== 'ollama') setActiveBadge(false);
+        }
       }
     );
   });
@@ -312,8 +407,11 @@ function setKeyStatus(ok, model) {
   if (model === 'groq') issueUrl = 'console.groq.com 에서 발급 가능';
   else if (model === 'gemini') issueUrl = 'aistudio.google.com 에서 발급 가능';
   else if (model === 'gpt') issueUrl = 'platform.openai.com 에서 발급 가능';
+  else if (model === 'ollama') issueUrl = '로컬 Ollama가 필요합니다';
 
-  keyStatus.textContent = ok ? '✓ 키 저장됨 · 분석 활성화' : `키 미설정 · ${issueUrl}`;
+  keyStatus.textContent = ok
+    ? (model === 'ollama' ? '✓ 로컬 Ollama 연결 준비됨' : '✓ 키 저장됨 · 분석 활성화')
+    : `키 미설정 · ${issueUrl}`;
   keyStatus.className = 'key-status ' + (ok ? 'ok' : '');
 }
 
@@ -331,4 +429,3 @@ function setActiveBadge(ok) {
     badge.style.background = 'var(--yellow-bg)';
   }
 }
-

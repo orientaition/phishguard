@@ -81,6 +81,11 @@
     .key-status { font-size: 11px; color: var(--text-secondary); margin-top: 8px; }
     .key-status.ok  { color: var(--green); }
     .key-status.err { color: var(--red); }
+    .api-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+    .api-head .form-label { margin-bottom: 0; }
+    .btn-test { padding: 5px 10px; font-size: 11px; font-weight: 500; background: var(--accent-bg); border: 1px solid var(--accent-border); color: var(--accent); border-radius: 8px; cursor: pointer; font-family: 'Google Sans', Roboto, sans-serif; transition: all .15s; white-space: nowrap; }
+    .btn-test:hover { opacity: 0.85; }
+    .btn-test:disabled { opacity: 0.6; cursor: default; }
 
     .btn-row { display: flex; gap: 8px; }
     .btn-save { flex: 1; padding: 10px; font-size: 13px; font-weight: 500; background: var(--accent); border: none; color: #fff; border-radius: 8px; cursor: pointer; font-family: 'Google Sans', Roboto, sans-serif; transition: all .15s; }
@@ -178,12 +183,16 @@
           <option value="groq">Groq (LLaMA 3.3)</option>
           <option value="gemini">Gemini (3.1 Flash Lite)</option>
           <option value="gpt">GPT (5.4)</option>
+          <option value="ollama">Ollama Local (qwen3.5:9b)</option>
         </select>
         <div style="position:absolute;right:12px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--text-secondary);font-size:10px;">▼</div>
       </div>
     </div>
     <div>
-      <div class="form-label">API 키</div>
+      <div class="api-head">
+        <div class="form-label" id="api-label">API 키</div>
+        <button type="button" class="btn-test" id="btn-test-api">API 테스트</button>
+      </div>
       <div class="input-wrap">
         <input type="password" class="pg-input" id="api-input" placeholder="키를 입력하세요" autocomplete="off" spellcheck="false" />
         <button type="button" class="eye-btn" id="eye-btn">

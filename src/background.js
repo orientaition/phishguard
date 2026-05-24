@@ -3,6 +3,8 @@
 const API_RESPONSE_LOGS_KEY = 'apiResponseLogs';
 const API_RESPONSE_LOG_LIMIT = 80;
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
+const OLLAMA_MODEL = 'qwen3.5:9b';
+const OLLAMA_CHAT_URL = 'http://localhost:11434/api/chat';
 let apiLogWriteQueue = Promise.resolve();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -30,6 +32,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .then(result => sendResponse({ ok: true, result }))
         .catch(err  => sendResponse({ ok: false, error: err.message }));
     });
+    return true;
+  }
+
+  if (message.type === 'TEST_API') {
+    testModelConnection(message.payload)
+      .then(result => sendResponse({ ok: true, ...result }))
+      .catch(err => sendResponse({ ok: false, error: err.message }));
     return true;
   }
 
@@ -83,7 +92,7 @@ async function requestModelJson(sys, usr, stored, expectedType, logContext = {})
 
   if (!apiKey && model === 'groq') apiKey = stored.groqApiKey;
 
-  if (!apiKey || apiKey.trim() === '') {
+  if (model !== 'ollama' && (!apiKey || apiKey.trim() === '')) {
     const error = new Error('API 키가 설정되지 않았습니다. 팝업에서 설정 메뉴를 확인해주세요.');
     await appendApiResponseLog({
       status: 'error',
@@ -159,6 +168,31 @@ async function requestModelJson(sys, usr, stored, expectedType, logContext = {})
       const data = await response.json();
       raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
 
+    } else if (model === 'ollama') {
+      provider = `Ollama Local (${OLLAMA_MODEL})`;
+      const response = await fetch(OLLAMA_CHAT_URL, {
+        method : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body   : JSON.stringify({
+          model   : OLLAMA_MODEL,
+          stream  : false,
+          think   : false,
+          format  : 'json',
+          messages: [{ role: 'system', content: sys }, { role: 'user', content: usr }],
+          options : { temperature: 0.1 }
+        })
+      });
+      httpStatus = response.status;
+      if (!response.ok) {
+        raw = await safeReadResponseText(response);
+        if (response.status === 403) {
+          throw new Error('Ollama가 Chrome 확장 프로그램 요청을 차단했습니다. OLLAMA_ORIGINS=* 설정 후 Ollama를 재시작해주세요.');
+        }
+        throw new Error(`Ollama API 오류: ${response.status}`);
+      }
+      const data = await response.json();
+      raw = data?.message?.content || data?.response || '';
+
     } else {
       throw new Error(`지원하지 않는 AI 모델입니다: ${model}`);
     }
@@ -200,6 +234,92 @@ async function safeReadResponseText(response) {
   } catch (_) {
     return '';
   }
+}
+
+async function testModelConnection(payload = {}) {
+  const model = payload.model || 'groq';
+  const apiKey = String(payload.apiKey || '').trim();
+
+  if (model !== 'ollama' && !apiKey) {
+    throw new Error('API 키를 입력한 뒤 테스트해주세요.');
+  }
+
+  if (model === 'ollama') {
+    const response = await fetch(OLLAMA_CHAT_URL, {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify({
+        model   : OLLAMA_MODEL,
+        stream  : false,
+        think   : false,
+        format  : 'json',
+        messages: [
+          { role: 'system', content: 'Return only JSON.' },
+          { role: 'user', content: 'Respond with {"ok":true}.' }
+        ],
+        options : { temperature: 0 }
+      })
+    });
+
+    if (!response.ok) {
+      const raw = await safeReadResponseText(response);
+      if (response.status === 403) {
+        throw new Error('Ollama가 Chrome 확장 프로그램 요청을 차단했습니다. OLLAMA_ORIGINS=* 설정 후 Ollama를 재시작해주세요.');
+      }
+      throw new Error(`Ollama API 오류: ${response.status}${raw ? ` · ${raw.slice(0, 120)}` : ''}`);
+    }
+
+    const data = await response.json();
+    const raw = data?.message?.content || data?.response || '';
+    parseModelJson(raw);
+    return { provider: `Ollama Local (${OLLAMA_MODEL})` };
+  }
+
+  if (model === 'groq') {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body   : JSON.stringify({
+        model          : 'llama-3.3-70b-versatile',
+        messages       : [{ role: 'user', content: 'Return only JSON: {"ok":true}' }],
+        temperature    : 0,
+        response_format: { type: 'json_object' }
+      })
+    });
+    if (!response.ok) throw new Error(`Groq API 오류: ${response.status}`);
+    return { provider: 'Groq' };
+  }
+
+  if (model === 'gpt') {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+      body   : JSON.stringify({
+        model          : 'gpt-4o',
+        messages       : [{ role: 'user', content: 'Return only JSON: {"ok":true}' }],
+        temperature    : 0,
+        response_format: { type: 'json_object' }
+      })
+    });
+    if (!response.ok) throw new Error(`GPT API 오류: ${response.status}`);
+    return { provider: 'GPT' };
+  }
+
+  if (model === 'gemini') {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
+    const response = await fetch(url, {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify({
+        contents        : [{ role: 'user', parts: [{ text: 'Return only JSON: {"ok":true}' }] }],
+        generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+      })
+    });
+    if (!response.ok) throw new Error(`Gemini API 오류: ${response.status}`);
+    return { provider: 'Gemini 3.1 Flash Lite' };
+  }
+
+  throw new Error(`지원하지 않는 AI 모델입니다: ${model}`);
 }
 
 function appendApiResponseLog(entry) {
@@ -359,7 +479,7 @@ function normalizeMetadataBatchResult(result) {
 
 function normalizeModelRiskLevel(level) {
   const value = String(level || '').trim().toUpperCase();
-  if (value === 'HIGH') return 'HIGH';
+  if (value === 'HIGH' || value === 'CRITICAL' || value === 'DANGEROUS') return 'HIGH';
   if (value === 'MEDIUM') return 'MEDIUM';
   return 'LOW';
 }
@@ -368,6 +488,7 @@ function clampConfidence(value) {
   const number = Number(value);
   const fallback = Number(arguments.length > 1 ? arguments[1] : 70);
   if (!Number.isFinite(number) || number <= 0) return Number.isFinite(fallback) ? fallback : 70;
+  if (number > 0 && number <= 1) return Math.max(0, Math.min(100, Math.round(number * 100)));
   return Math.max(0, Math.min(100, Math.round(number)));
 }
 
