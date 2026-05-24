@@ -8,7 +8,10 @@ import vm from 'node:vm';
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BACKGROUND_PATH = path.join(PROJECT_ROOT, 'src', 'background.js');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'eval-results');
-const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
+const CACHE_DIR = path.join(PROJECT_ROOT, '.cache', 'phishguard-eval');
+const GEMINI_MODEL = 'gemini-3.1-flash-lite';
+const DATASET_FETCH_TIMEOUT_MS = 60_000;
+const MODEL_FETCH_TIMEOUT_MS = 90_000;
 
 export const DATASET_URLS = {
   texts: 'https://huggingface.co/datasets/ealvaradob/phishing-dataset/resolve/main/texts.json',
@@ -34,7 +37,25 @@ async function main() {
     return;
   }
 
-  await runEvaluation(args, createCliReporter());
+  const repeat = Math.max(1, positiveInt(args.repeat, 1));
+  const repeatPauseMs = positiveInt(args.repeatPause, 0);
+  const reporter = createCliReporter();
+
+  for (let i = 0; i < repeat; i += 1) {
+    if (repeat > 1) {
+      reporter.log(`\n반복 실행 ${i + 1}/${repeat}`);
+    }
+
+    await runEvaluation({
+      ...args,
+      seed: args.seed ? `${args.seed}-${i + 1}` : undefined
+    }, reporter);
+
+    if (i < repeat - 1 && repeatPauseMs > 0) {
+      reporter.log(`반복 대기: ${Math.round(repeatPauseMs / 1000)}초`);
+      await sleep(repeatPauseMs);
+    }
+  }
 }
 
 export async function runEvaluation(args = {}, reporter = {}) {
@@ -44,17 +65,26 @@ export async function runEvaluation(args = {}, reporter = {}) {
   const limit = positiveInt(args.limit, 12);
   const offset = positiveInt(args.offset, 0);
   const delayMs = positiveInt(args.delay, 700);
+  const chunkCount = positiveInt(args.chunkCount, 5);
+  const chunkPauseMs = positiveInt(args.chunkPause, 0);
   const bodyLimit = positiveInt(args.bodyLimit, 3000);
   const mediumAs = String(args.mediumAs || 'phishing').toLowerCase();
   const dryRun = Boolean(args.dryRun);
   const balanced = args.balanced !== false;
+  const randomize = args.random !== false;
+  const seed = args.seed ? String(args.seed) : String(Date.now());
 
   throwIfAborted(report.signal);
   const promptTools = await loadCurrentPromptTools();
   const env = await loadEnv();
   const apiKey = dryRun ? '' : getApiKey(model, env);
-  const rows = await loadRows(args, datasetName, report.signal);
-  const samples = selectSamples(rows, { limit, offset, balanced });
+  report.log(`데이터셋 준비 중: ${datasetName}`);
+  const rows = await loadRows(args, datasetName, report.signal, report);
+  report.log(`데이터셋 로드 완료: ${rows.length}개`);
+  const samples = selectSamples(rows, { limit, offset, balanced, randomize, seed });
+  report.log(`평가 샘플 선택 완료: ${samples.length}개`);
+  report.log(`샘플링: ${randomize ? `랜덤 (seed=${seed})` : '순차'}`);
+  const chunkSize = Math.max(1, Math.ceil(samples.length / Math.max(1, chunkCount)));
 
   if (samples.length === 0) {
     throw new Error('평가할 샘플을 찾지 못했습니다.');
@@ -77,6 +107,11 @@ export async function runEvaluation(args = {}, reporter = {}) {
     limit,
     offset,
     balanced,
+    randomize,
+    seed,
+    chunkCount,
+    chunkSize,
+    chunkPauseMs,
     mediumAs,
     startedAt: startedAt.toISOString()
   });
@@ -85,6 +120,9 @@ export async function runEvaluation(args = {}, reporter = {}) {
 
   report.log(`현재 background.js 프롬프트로 ${samples.length}개 샘플을 평가합니다.`);
   report.log(`데이터셋: ${datasetName}, 모델: ${model}${dryRun ? ', dry-run' : ''}`);
+  if (!dryRun && samples.length > chunkSize && chunkPauseMs > 0) {
+    report.log(`요청 페이싱: ${chunkSize}개 처리 후 ${Math.round(chunkPauseMs / 1000)}초 대기`);
+  }
 
   for (let i = 0; i < samples.length; i += 1) {
     throwIfAborted(report.signal);
@@ -116,6 +154,7 @@ export async function runEvaluation(args = {}, reporter = {}) {
       continue;
     }
 
+    report.log(`[${i + 1}/${samples.length}] API 호출 중...`);
     const raw = await callModel({ model, apiKey, systemPrompt, userPrompt, signal: report.signal });
     const result = promptTools.normalizeModelResult(
       promptTools.parseModelJson(raw),
@@ -142,7 +181,12 @@ export async function runEvaluation(args = {}, reporter = {}) {
     await fs.appendFile(jsonlPath, `${JSON.stringify(record)}\n`, 'utf8');
     report.record(record, i, samples.length);
 
-    if (i < samples.length - 1 && delayMs > 0) {
+    const hasMore = i < samples.length - 1;
+    const isChunkBoundary = (i + 1) % chunkSize === 0;
+    if (hasMore && isChunkBoundary && chunkPauseMs > 0) {
+      report.log(`요청 묶음 대기: ${Math.round(chunkPauseMs / 1000)}초 (${i + 1}/${samples.length} 완료)`);
+      await sleep(chunkPauseMs);
+    } else if (hasMore && delayMs > 0) {
       await sleep(delayMs);
     }
   }
@@ -251,8 +295,14 @@ function printHelp() {
   --local PATH                  이미 받은 JSON 파일을 사용합니다.
   --limit N                     평가할 샘플 수입니다. 기본값은 12입니다.
   --offset N                    샘플 시작 위치입니다. 기본값은 0입니다.
+  --no-random                   샘플을 순차 선택합니다. 기본값은 랜덤입니다.
+  --seed VALUE                  랜덤 샘플링 seed입니다. 같은 seed는 같은 샘플을 고릅니다.
   --no-balanced                 label 0/1 균형 샘플링을 끕니다.
   --delay MS                    API 호출 간 대기 시간입니다. 기본값은 700입니다.
+  --chunk-count N               전체 요청을 N묶음으로 나눕니다. 기본값은 5입니다.
+  --chunk-pause MS              요청 묶음 사이 대기 시간입니다. 기본값은 0입니다.
+  --repeat N                    같은 설정으로 평가를 N번 반복합니다. 기본값은 1입니다.
+  --repeat-pause MS             반복 실행 사이 대기 시간입니다. 기본값은 0입니다.
   --medium-as phishing|benign   MEDIUM 판정을 어떤 라벨로 볼지 정합니다. 기본값은 phishing입니다.
   --dry-run                     API 호출 없이 현재 프롬프트 입력만 확인합니다.`);
 }
@@ -329,29 +379,133 @@ function getApiKey(model, env) {
   throw new Error(`${model} API 키가 없습니다. .env 또는 환경변수에 ${candidates.join(' / ')} 중 하나를 넣어주세요.`);
 }
 
-async function loadRows(args, datasetName, signal) {
+async function loadRows(args, datasetName, signal, reporter = {}) {
   let raw;
   let source;
 
   if (args.local) {
     source = path.resolve(PROJECT_ROOT, String(args.local));
+    reporter.log?.(`로컬 데이터셋 사용: ${relative(source)}`);
     raw = await fs.readFile(source, 'utf8');
   } else {
     source = args.source || DATASET_URLS[datasetName];
     if (!source) {
       throw new Error(`알 수 없는 dataset 값입니다: ${datasetName}`);
     }
-    const response = await fetch(source, { signal });
-    if (!response.ok) {
-      throw new Error(`데이터셋 다운로드 실패: HTTP ${response.status}`);
+
+    const cachePath = datasetCachePath(datasetName, source);
+    try {
+      raw = await fs.readFile(cachePath, 'utf8');
+      reporter.log?.(`캐시 데이터셋 사용: ${relative(cachePath)}`);
+    } catch (_) {
+      reporter.log?.(`원격 데이터셋 다운로드 중: ${source}`);
+      const response = await fetchWithTimeout(source, {
+        signal,
+        timeoutMs: DATASET_FETCH_TIMEOUT_MS
+      });
+      if (!response.ok) {
+        throw new Error(`데이터셋 다운로드 실패: HTTP ${response.status}`);
+      }
+      raw = await readResponseTextWithProgress(response, {
+        signal,
+        reporter,
+        label: '데이터셋 다운로드'
+      });
+      await fs.mkdir(CACHE_DIR, { recursive: true });
+      await fs.writeFile(cachePath, raw, 'utf8');
+      reporter.log?.(`데이터셋 캐시 저장: ${relative(cachePath)}`);
     }
-    raw = await response.text();
   }
 
   const parsed = parseJsonOrJsonl(raw);
   return extractRows(parsed)
     .map((row, rowIndex) => normalizeDatasetRow(row, rowIndex))
     .filter(row => row.text);
+}
+
+function datasetCachePath(datasetName, source) {
+  const safeSource = String(source || '')
+    .replace(/^https?:\/\//i, '')
+    .replace(/[^a-z0-9._-]+/gi, '_')
+    .slice(0, 120);
+  return path.join(CACHE_DIR, `${datasetName}-${safeSource || 'dataset'}.json`);
+}
+
+async function fetchWithTimeout(url, { signal, timeoutMs, ...options } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(new Error(`timeout ${timeoutMs}ms`)), timeoutMs);
+  const abortFromParent = () => controller.abort(signal.reason);
+
+  if (signal?.aborted) {
+    clearTimeout(timer);
+    throw signal.reason || new Error('aborted');
+  }
+
+  signal?.addEventListener?.('abort', abortFromParent, { once: true });
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (controller.signal.aborted && !signal?.aborted) {
+      throw new Error(`요청 시간이 초과되었습니다: ${Math.round(timeoutMs / 1000)}초`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener?.('abort', abortFromParent);
+  }
+}
+
+async function readResponseTextWithProgress(response, { signal, reporter = {}, label = '다운로드' } = {}) {
+  const total = Number(response.headers.get('content-length') || 0);
+  const reader = response.body?.getReader?.();
+
+  if (!reader) {
+    reporter.log?.(`${label}: 크기를 알 수 없어 일반 방식으로 읽습니다.`);
+    return response.text();
+  }
+
+  const chunks = [];
+  let received = 0;
+  let lastPercent = -1;
+  const decoder = new TextDecoder();
+
+  while (true) {
+    throwIfAborted(signal);
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    chunks.push(value);
+    received += value.byteLength;
+
+    if (total > 0) {
+      const percent = Math.min(100, Math.floor((received / total) * 100));
+      if (percent === 100 || percent >= lastPercent + 5) {
+        lastPercent = percent;
+        reporter.log?.(`${label}: ${percent}% (${formatBytes(received)} / ${formatBytes(total)})`);
+      }
+    } else if (received >= (lastPercent + 1) * 1024 * 1024) {
+      lastPercent += 1;
+      reporter.log?.(`${label}: ${formatBytes(received)} 받음`);
+    }
+  }
+
+  if (total > 0 && lastPercent < 100) {
+    reporter.log?.(`${label}: 100% (${formatBytes(received)} / ${formatBytes(total)})`);
+  }
+
+  let text = '';
+  for (const chunk of chunks) {
+    text += decoder.decode(chunk, { stream: true });
+  }
+  text += decoder.decode();
+  return text;
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes) || 0;
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)}MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(1)}KB`;
+  return `${value}B`;
 }
 
 function parseJsonOrJsonl(raw) {
@@ -411,30 +565,61 @@ function cleanTextBlock(value) {
     .trim();
 }
 
-function selectSamples(rows, { limit, offset, balanced }) {
+function selectSamples(rows, { limit, offset, balanced, randomize = true, seed = '0' }) {
   const safeRows = rows.slice(offset);
+  const rng = createSeededRandom(seed);
 
   if (!balanced) {
-    return safeRows.slice(0, limit);
+    const pool = randomize ? shuffleCopy(safeRows, rng) : safeRows;
+    return pool.slice(0, limit);
   }
 
   const phishing = safeRows.filter(row => normalizeExpected(row.label) === 1);
   const benign = safeRows.filter(row => normalizeExpected(row.label) === 0);
 
   if (phishing.length === 0 || benign.length === 0) {
-    return safeRows.slice(0, limit);
+    const pool = randomize ? shuffleCopy(safeRows, rng) : safeRows;
+    return pool.slice(0, limit);
   }
 
   const result = [];
   const perLabel = Math.ceil(limit / 2);
   const max = Math.max(perLabel, limit - perLabel);
+  const benignPool = randomize ? shuffleCopy(benign, rng) : benign;
+  const phishingPool = randomize ? shuffleCopy(phishing, rng) : phishing;
 
   for (let i = 0; i < max && result.length < limit; i += 1) {
-    if (benign[i]) result.push(benign[i]);
-    if (result.length < limit && phishing[i]) result.push(phishing[i]);
+    if (benignPool[i]) result.push(benignPool[i]);
+    if (result.length < limit && phishingPool[i]) result.push(phishingPool[i]);
   }
 
-  return result.slice(0, limit);
+  return randomize ? shuffleCopy(result.slice(0, limit), rng) : result.slice(0, limit);
+}
+
+function shuffleCopy(items, rng) {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rng() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+}
+
+function createSeededRandom(seed) {
+  let state = 2166136261;
+  const text = String(seed);
+  for (let i = 0; i < text.length; i += 1) {
+    state ^= text.charCodeAt(i);
+    state = Math.imul(state, 16777619);
+  }
+
+  return () => {
+    state += 0x6D2B79F5;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function normalizeExpected(label) {
@@ -458,9 +643,10 @@ function makeSyntheticSubject(text) {
 
 async function callModel({ model, apiKey, systemPrompt, userPrompt, signal }) {
   if (model === 'groq') {
-    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    const response = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       signal,
+      timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`
@@ -485,9 +671,10 @@ async function callModel({ model, apiKey, systemPrompt, userPrompt, signal }) {
   }
 
   if (model === 'gpt') {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetchWithTimeout('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       signal,
+      timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`
@@ -512,9 +699,10 @@ async function callModel({ model, apiKey, systemPrompt, userPrompt, signal }) {
   }
 
   if (model === 'gemini') {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`, {
+    const response = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`, {
       method: 'POST',
       signal,
+      timeoutMs: MODEL_FETCH_TIMEOUT_MS,
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: systemPrompt }] },

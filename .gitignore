@@ -10,4 +10,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 eval-results/
+.cache/
+data/
  

@@ -2,7 +2,7 @@
 
 const API_RESPONSE_LOGS_KEY = 'apiResponseLogs';
 const API_RESPONSE_LOG_LIMIT = 80;
-const GEMINI_MODEL = 'gemini-3.1-flash-lite-preview';
+const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 let apiLogWriteQueue = Promise.resolve();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -139,7 +139,7 @@ async function requestModelJson(sys, usr, stored, expectedType, logContext = {})
       raw = data?.choices?.[0]?.message?.content || '';
 
     } else if (model === 'gemini') {
-      provider = 'Gemini 3.1 Flash Lite Preview';
+      provider = 'Gemini 3.1 Flash Lite';
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
       const response = await fetch(url, {
         method : 'POST',

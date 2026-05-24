@@ -8,7 +8,8 @@ import queue
 import threading
 import subprocess
 import tkinter as tk
-from tkinter import messagebox
+import tkinter.font as tkfont
+from tkinter import messagebox, filedialog
 import customtkinter as ctk
 
 # CustomTkinter 기본 설정 (Slate / Indigo 테마 매칭)
@@ -16,20 +17,20 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")  # 기본 뼈대 블루
 
 # 공통 현대 색상 팔레트 정의
-COLOR_BG = "#0F172A"          # Slate 900
-COLOR_PANEL = "#1E293B"       # Slate 800
-COLOR_PANEL_SOFT = "#0F172A"  # Slate 900 (내부 영역)
-COLOR_PANEL_LIFT = "#334155"  # Slate 700 (배지 대기 배경)
-COLOR_LINE = "#334155"        # Slate 700
-COLOR_TEXT = "#F8FAFC"        # Slate 50
-COLOR_MUTED = "#94A3B8"       # Slate 400
-COLOR_BLUE = "#6366F1"        # Indigo 500
-COLOR_BLUE_HOVER = "#4F46E5"  # Indigo 600
-COLOR_RED = "#EF4444"         # Red 500
-COLOR_RED_PANEL = "#451A1A"   # Rose 900 (체크리스트의 심각 의심 배경)
-COLOR_ORANGE = "#F59E0B"      # Amber 500
-COLOR_GREEN = "#10B981"       # Emerald 500
-COLOR_CONSOLE_BG = "#020617"   # Slate 950 (터미널용 초고밀도 검은색)
+COLOR_BG = "#030303"
+COLOR_PANEL = "#0A0A0A"
+COLOR_PANEL_SOFT = "#050505"
+COLOR_PANEL_LIFT = "#141414"
+COLOR_LINE = "#262626"
+COLOR_TEXT = "#F5F5F5"
+COLOR_MUTED = "#8A8A8A"
+COLOR_BLUE = "#D4AF37"
+COLOR_BLUE_HOVER = "#B99322"
+COLOR_RED = "#FF4D4D"
+COLOR_RED_PANEL = "#210707"
+COLOR_ORANGE = "#F5A524"
+COLOR_GREEN = "#20D07A"
+COLOR_CONSOLE_BG = "#000000"
 
 class PhishGuardGUI(ctk.CTk):
     def __init__(self):
@@ -41,13 +42,16 @@ class PhishGuardGUI(ctk.CTk):
         self.minsize(1300, 880)
         self.configure(fg_color=COLOR_BG)
         
-        # 폰트 구성
-        self.font_title = ctk.CTkFont(family="Segoe UI", size=20, weight="bold")
-        self.font_subtitle = ctk.CTkFont(family="Segoe UI", size=11)
-        self.font_label = ctk.CTkFont(family="Segoe UI", size=12, weight="bold")
-        self.font_value = ctk.CTkFont(family="Segoe UI", size=12)
-        self.font_badge = ctk.CTkFont(family="Segoe UI", size=11, weight="bold")
-        self.font_console = ctk.CTkFont(family="Consolas", size=10)
+        # 폰트 구성: Windows에서 Segoe UI/Consolas만 지정하면 한글이 깨질 수 있어
+        # 한글 글리프가 있는 폰트를 우선 사용합니다.
+        self.ui_font_family = self.pick_font_family("Malgun Gothic", "맑은 고딕", "Noto Sans KR", "Segoe UI")
+        self.console_font_family = self.pick_font_family("D2Coding", "Cascadia Mono", "Malgun Gothic", "맑은 고딕", "Consolas")
+        self.font_title = ctk.CTkFont(family=self.ui_font_family, size=20, weight="bold")
+        self.font_subtitle = ctk.CTkFont(family=self.ui_font_family, size=11)
+        self.font_label = ctk.CTkFont(family=self.ui_font_family, size=12, weight="bold")
+        self.font_value = ctk.CTkFont(family=self.ui_font_family, size=12)
+        self.font_badge = ctk.CTkFont(family=self.ui_font_family, size=11, weight="bold")
+        self.font_console = ctk.CTkFont(family=self.console_font_family, size=10)
         
         # 스레드 제어 변수들
         self.process = None
@@ -58,6 +62,7 @@ class PhishGuardGUI(ctk.CTk):
         self.api_console_window = None
         self.api_console_box = None
         self.api_console_lines = []
+        self.history_buttons = []
         self.batch_progress_active = False
         self.env_values = self.load_env_file()
         self.api_key_vars = {
@@ -65,6 +70,7 @@ class PhishGuardGUI(ctk.CTk):
             "groq": ctk.StringVar(value=self.first_env_value("GROQ_API_KEY", "groq_key", "groq_api_key")),
             "gpt": ctk.StringVar(value=self.first_env_value("OPENAI_API_KEY", "openai_key", "openai_api_key")),
         }
+        self.batch_local_dataset_var = ctk.StringVar(value="")
         
         # 2. UI 레이아웃 생성
         self.create_layouts()
@@ -77,6 +83,17 @@ class PhishGuardGUI(ctk.CTk):
         
         # 창 닫기 이벤트 핸들러
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+    def pick_font_family(self, *candidates):
+        """현재 PC에 설치된 후보 폰트 중 첫 번째를 반환합니다."""
+        try:
+            installed = {name.lower(): name for name in tkfont.families()}
+            for candidate in candidates:
+                if candidate.lower() in installed:
+                    return installed[candidate.lower()]
+        except Exception:
+            pass
+        return candidates[-1]
 
     def check_environment(self):
         """환경변수 및 API 키가 잘 로딩되었는지 검증하여 로깅"""
@@ -120,6 +137,26 @@ class PhishGuardGUI(ctk.CTk):
             if value:
                 return value
         return ""
+
+    def has_api_key_for_model(self, model):
+        key_map = {
+            "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "gemini_key", "gemini_api_key"],
+            "groq": ["GROQ_API_KEY", "groq_key", "groq_api_key"],
+            "gpt": ["OPENAI_API_KEY", "openai_key", "openai_api_key"],
+        }
+        if self.api_key_vars.get(model) and self.api_key_vars[model].get().strip():
+            return True
+
+        self.env_values = self.load_env_file()
+        env = { **os.environ, **self.env_values }
+        return any(env.get(key) for key in key_map.get(model, []))
+
+    def reset_batch_run_state(self, status_text="대기 중"):
+        self.stop_batch_activity()
+        self.process_running = False
+        self.btn_run.configure(state="normal")
+        self.btn_stop.configure(state="disabled")
+        self.lbl_status.configure(text=status_text)
 
     def create_api_key_section(self, parent):
         """모델 API 키 입력 UI를 생성하고 공용 StringVar에 바인딩"""
@@ -256,13 +293,26 @@ class PhishGuardGUI(ctk.CTk):
         
         self.tab_batch = self.tabview.add("데이터셋 일괄 평가")
         self.tab_manual = self.tabview.add("개별 메일 수동 테스트")
+        self.tab_history = self.tabview.add("저장된 결과")
         
         # 탭 폰트 세팅
-        self.tabview._segmented_button.configure(font=ctk.CTkFont(family="Segoe UI", size=13, weight="bold"))
+        self.tabview._segmented_button.configure(font=ctk.CTkFont(family=self.ui_font_family, size=13, weight="bold"))
         
         # 각 탭 빌드
         self.build_batch_tab()
         self.build_manual_tab()
+        self.build_history_tab()
+
+    def browse_local_dataset(self):
+        file_path = filedialog.askopenfilename(
+            title="로컬 데이터셋 JSON 선택",
+            filetypes=[
+                ("JSON / JSONL", "*.json *.jsonl"),
+                ("All files", "*.*")
+            ]
+        )
+        if file_path:
+            self.batch_local_dataset_var.set(file_path)
 
     # =========================================================================
     # TAB 1: 데이터셋 일괄 평가 구현
@@ -288,9 +338,9 @@ class PhishGuardGUI(ctk.CTk):
         
         # 모델 선택
         self.create_section_label(self.batch_scroll, "인공지능 모델 (AI Model)")
-        self.batch_model_var = ctk.StringVar(value="Gemini 3.1 Flash Lite Preview")
+        self.batch_model_var = ctk.StringVar(value="Gemini 3.1 Flash Lite")
         self.combo_model = ctk.CTkOptionMenu(
-            self.batch_scroll, values=["Gemini 3.1 Flash Lite Preview", "Groq Llama 3.3 70B", "GPT-4o"],
+            self.batch_scroll, values=["Gemini 3.1 Flash Lite", "Groq Llama 3.3 70B", "GPT-4o"],
             variable=self.batch_model_var, fg_color=COLOR_PANEL_SOFT, button_color=COLOR_PANEL_LIFT,
             button_hover_color=COLOR_LINE, dropdown_fg_color=COLOR_PANEL, text_color=COLOR_TEXT, font=self.font_value
         )
@@ -310,6 +360,63 @@ class PhishGuardGUI(ctk.CTk):
             button_hover_color=COLOR_LINE, dropdown_fg_color=COLOR_PANEL, text_color=COLOR_TEXT, font=self.font_value
         )
         self.combo_dataset.pack(fill="x", pady=(0, 16))
+
+        local_frame = ctk.CTkFrame(self.batch_scroll, fg_color=COLOR_PANEL_SOFT, corner_radius=8)
+        local_frame.pack(fill="x", pady=(0, 16))
+
+        local_title = ctk.CTkLabel(
+            local_frame,
+            text="로컬 데이터셋 JSON",
+            font=self.font_label,
+            text_color=COLOR_TEXT,
+            anchor="w"
+        )
+        local_title.pack(fill="x", padx=12, pady=(10, 4))
+
+        local_hint = ctk.CTkLabel(
+            local_frame,
+            text="선택하면 원격 다운로드 대신 이 파일을 사용합니다.",
+            font=self.font_subtitle,
+            text_color=COLOR_MUTED,
+            anchor="w"
+        )
+        local_hint.pack(fill="x", padx=12, pady=(0, 8))
+
+        local_entry = ctk.CTkEntry(
+            local_frame,
+            textvariable=self.batch_local_dataset_var,
+            placeholder_text="예: data\\texts.json",
+            fg_color=COLOR_BG,
+            text_color=COLOR_TEXT,
+            font=self.font_value,
+            height=34
+        )
+        local_entry.pack(fill="x", padx=12, pady=(0, 8))
+
+        local_btn_frame = ctk.CTkFrame(local_frame, fg_color="transparent")
+        local_btn_frame.pack(fill="x", padx=12, pady=(0, 12))
+
+        btn_browse_local = ctk.CTkButton(
+            local_btn_frame,
+            text="파일 선택",
+            fg_color=COLOR_PANEL_LIFT,
+            hover_color=COLOR_LINE,
+            font=self.font_label,
+            height=32,
+            command=self.browse_local_dataset
+        )
+        btn_browse_local.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+        btn_clear_local = ctk.CTkButton(
+            local_btn_frame,
+            text="해제",
+            fg_color=COLOR_PANEL_LIFT,
+            hover_color=COLOR_LINE,
+            font=self.font_label,
+            height=32,
+            command=lambda: self.batch_local_dataset_var.set("")
+        )
+        btn_clear_local.pack(side="left", fill="x", expand=True, padx=(6, 0))
         
         # 샘플 수 슬라이더
         self.lbl_limit = self.create_section_label(self.batch_scroll, "평가 샘플 수 (Limit): 12")
@@ -328,6 +435,16 @@ class PhishGuardGUI(ctk.CTk):
         self.batch_delay_slider = ctk.CTkSlider(self.batch_scroll, from_=0, to=5000, number_of_steps=50, command=self.on_delay_change)
         self.batch_delay_slider.set(700)
         self.batch_delay_slider.pack(fill="x", pady=(0, 20))
+
+        self.lbl_repeat = self.create_section_label(self.batch_scroll, "반복 횟수: 1")
+        self.batch_repeat_slider = ctk.CTkSlider(self.batch_scroll, from_=1, to=20, number_of_steps=19, command=self.on_repeat_change)
+        self.batch_repeat_slider.set(1)
+        self.batch_repeat_slider.pack(fill="x", pady=(0, 16))
+
+        self.lbl_repeat_pause = self.create_section_label(self.batch_scroll, "반복 대기 시간: 0초")
+        self.batch_repeat_pause_slider = ctk.CTkSlider(self.batch_scroll, from_=0, to=180, number_of_steps=36, command=self.on_repeat_pause_change)
+        self.batch_repeat_pause_slider.set(0)
+        self.batch_repeat_pause_slider.pack(fill="x", pady=(0, 20))
         
         # 균형 샘플링 토글
         self.batch_balanced_switch = ctk.CTkSwitch(
@@ -354,16 +471,16 @@ class PhishGuardGUI(ctk.CTk):
         self.batch_status_card.pack_propagate(False)
         
         # 수평 메트릭 정보
-        self.lbl_status = ctk.CTkLabel(self.batch_status_card, text="대기 중", font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"), text_color=COLOR_TEXT)
+        self.lbl_status = ctk.CTkLabel(self.batch_status_card, text="대기 중", font=ctk.CTkFont(family=self.ui_font_family, size=15, weight="bold"), text_color=COLOR_TEXT)
         self.lbl_status.place(x=20, y=14)
         
-        self.lbl_accuracy = ctk.CTkLabel(self.batch_status_card, text="정확도: -", font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"), text_color=COLOR_GREEN)
+        self.lbl_accuracy = ctk.CTkLabel(self.batch_status_card, text="정확도: -", font=ctk.CTkFont(family=self.ui_font_family, size=15, weight="bold"), text_color=COLOR_GREEN)
         self.lbl_accuracy.place(x=260, y=14)
         
-        self.lbl_progress = ctk.CTkLabel(self.batch_status_card, text="진행: 0 / 0", font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"), text_color=COLOR_TEXT)
+        self.lbl_progress = ctk.CTkLabel(self.batch_status_card, text="진행: 0 / 0", font=ctk.CTkFont(family=self.ui_font_family, size=15, weight="bold"), text_color=COLOR_TEXT)
         self.lbl_progress.place(x=460, y=14)
 
-        self.lbl_progress_percent = ctk.CTkLabel(self.batch_status_card, text="0%", font=ctk.CTkFont(family="Segoe UI", size=15, weight="bold"), text_color=COLOR_BLUE)
+        self.lbl_progress_percent = ctk.CTkLabel(self.batch_status_card, text="0%", font=ctk.CTkFont(family=self.ui_font_family, size=15, weight="bold"), text_color=COLOR_BLUE)
         self.lbl_progress_percent.place(x=650, y=14)
         
         self.lbl_distribution = ctk.CTkLabel(self.batch_status_card, text="낮음(LOW) 0   보통(MEDIUM) 0   높음(HIGH) 0", font=self.font_subtitle, text_color=COLOR_MUTED)
@@ -417,6 +534,12 @@ class PhishGuardGUI(ctk.CTk):
         
     def on_delay_change(self, val):
         self.lbl_delay.configure(text=f"호출 지연 시간 (Delay): {int(val)} ms")
+
+    def on_repeat_change(self, val):
+        self.lbl_repeat.configure(text=f"반복 횟수: {int(val)}")
+
+    def on_repeat_pause_change(self, val):
+        self.lbl_repeat_pause.configure(text=f"반복 대기 시간: {int(val)}초")
 
     # =========================================================================
     # TAB 2: 개별 메일 수동 테스트 구현
@@ -472,9 +595,9 @@ class PhishGuardGUI(ctk.CTk):
         
         # 모델 선택
         self.create_section_label(self.manual_scroll, "인공지능 모델 (AI Model)")
-        self.manual_model_var = ctk.StringVar(value="Gemini 3.1 Flash Lite Preview")
+        self.manual_model_var = ctk.StringVar(value="Gemini 3.1 Flash Lite")
         self.combo_mmodel = ctk.CTkOptionMenu(
-            self.manual_scroll, values=["Gemini 3.1 Flash Lite Preview", "Groq Llama 3.3 70B", "GPT-4o"],
+            self.manual_scroll, values=["Gemini 3.1 Flash Lite", "Groq Llama 3.3 70B", "GPT-4o"],
             variable=self.manual_model_var, fg_color=COLOR_PANEL_SOFT, button_color=COLOR_PANEL_LIFT,
             button_hover_color=COLOR_LINE, dropdown_fg_color=COLOR_PANEL, text_color=COLOR_TEXT, font=self.font_value
         )
@@ -498,7 +621,7 @@ class PhishGuardGUI(ctk.CTk):
         self.manual_status_card.pack(fill="x", pady=(0, 16))
         self.manual_status_card.pack_propagate(False)
         
-        lbl_status_title = ctk.CTkLabel(self.manual_status_card, text="분석 상태", font=ctk.CTkFont(family="Segoe UI", size=14, weight="bold"), text_color=COLOR_TEXT)
+        lbl_status_title = ctk.CTkLabel(self.manual_status_card, text="분석 상태", font=ctk.CTkFont(family=self.ui_font_family, size=14, weight="bold"), text_color=COLOR_TEXT)
         lbl_status_title.place(x=20, y=14)
         
         # 위험도 등급 플랫 배지
@@ -589,6 +712,93 @@ class PhishGuardGUI(ctk.CTk):
         lbl = ctk.CTkLabel(self.chk_scroll, text="수동 이메일 분석을 진행하면\n6대 상세 분석 지표 카드가 리스팅됩니다.", font=self.font_subtitle, text_color=COLOR_MUTED)
         lbl.pack(pady=40)
 
+    def build_history_tab(self):
+        self.history_left = ctk.CTkFrame(self.tab_history, width=420, fg_color=COLOR_PANEL, corner_radius=12)
+        self.history_left.pack(side="left", fill="both", padx=(0, 16), pady=4)
+        self.history_left.pack_propagate(False)
+
+        self.history_right = ctk.CTkFrame(self.tab_history, fg_color="transparent")
+        self.history_right.pack(side="left", fill="both", expand=True, pady=4)
+
+        header = ctk.CTkFrame(self.history_left, fg_color="transparent")
+        header.pack(fill="x", padx=16, pady=(16, 10))
+
+        title = ctk.CTkLabel(header, text="저장된 평가 결과", font=self.font_title, text_color=COLOR_TEXT, anchor="w")
+        title.pack(side="left", fill="x", expand=True)
+
+        btn_refresh = ctk.CTkButton(
+            header,
+            text="새로고침",
+            width=92,
+            height=30,
+            fg_color=COLOR_PANEL_LIFT,
+            hover_color=COLOR_LINE,
+            font=self.font_subtitle,
+            command=self.refresh_history_results
+        )
+        btn_refresh.pack(side="right")
+
+        self.history_model_filter_var = ctk.StringVar(value="전체")
+        self.history_model_filter = ctk.CTkOptionMenu(
+            self.history_left,
+            values=["전체", "Gemini", "Groq", "GPT"],
+            variable=self.history_model_filter_var,
+            fg_color=COLOR_PANEL_SOFT,
+            button_color=COLOR_PANEL_LIFT,
+            button_hover_color=COLOR_LINE,
+            dropdown_fg_color=COLOR_PANEL,
+            text_color=COLOR_TEXT,
+            font=self.font_value,
+            command=lambda _value: self.refresh_history_results()
+        )
+        self.history_model_filter.pack(fill="x", padx=16, pady=(0, 10))
+
+        self.history_total_label = ctk.CTkLabel(
+            self.history_left,
+            text="누적 정확도: -",
+            font=self.font_label,
+            text_color=COLOR_GREEN,
+            anchor="w"
+        )
+        self.history_total_label.pack(fill="x", padx=16, pady=(0, 4))
+
+        self.history_total_detail_label = ctk.CTkLabel(
+            self.history_left,
+            text="완료된 결과를 집계합니다.",
+            font=self.font_subtitle,
+            text_color=COLOR_MUTED,
+            anchor="w"
+        )
+        self.history_total_detail_label.pack(fill="x", padx=16, pady=(0, 10))
+
+        self.history_list = ctk.CTkScrollableFrame(self.history_left, fg_color="transparent")
+        self.history_list.pack(fill="both", expand=True, padx=12, pady=(0, 12))
+
+        self.history_summary_card = ctk.CTkFrame(self.history_right, fg_color=COLOR_PANEL, corner_radius=12, height=180)
+        self.history_summary_card.pack(fill="x", pady=(0, 16))
+        self.history_summary_card.pack_propagate(False)
+
+        self.history_summary_box = ctk.CTkTextbox(
+            self.history_summary_card,
+            fg_color=COLOR_PANEL_SOFT,
+            text_color=COLOR_TEXT,
+            font=self.font_console
+        )
+        self.history_summary_box.pack(fill="both", expand=True, padx=16, pady=16)
+
+        self.history_records_card = ctk.CTkFrame(self.history_right, fg_color=COLOR_PANEL, corner_radius=12)
+        self.history_records_card.pack(fill="both", expand=True)
+
+        self.history_records_box = ctk.CTkTextbox(
+            self.history_records_card,
+            fg_color=COLOR_CONSOLE_BG,
+            text_color=COLOR_MUTED,
+            font=self.font_console
+        )
+        self.history_records_box.pack(fill="both", expand=True, padx=16, pady=16)
+
+        self.refresh_history_results()
+
     # =========================================================================
     # 백그라운드 서브프로세스 파이프라인 제어 (Thread-safe Queue)
     # =========================================================================
@@ -674,6 +884,209 @@ class PhishGuardGUI(ctk.CTk):
             self.api_console_box.insert("end", text)
             self.api_console_box.see("end")
 
+    def get_eval_results_dir(self):
+        return os.path.join(os.path.abspath(os.path.dirname(__file__)), '..', 'eval-results')
+
+    def list_saved_results(self):
+        eval_dir = self.get_eval_results_dir()
+        if not os.path.exists(eval_dir):
+            return []
+
+        results = []
+        for name in os.listdir(eval_dir):
+            if not name.endswith('.jsonl'):
+                continue
+            jsonl_path = os.path.join(eval_dir, name)
+            summary_path = jsonl_path.replace('.jsonl', '.summary.json')
+            results.append({
+                "name": name,
+                "jsonl_path": jsonl_path,
+                "summary_path": summary_path,
+                "mtime": os.path.getmtime(jsonl_path),
+                "has_summary": os.path.exists(summary_path),
+                "model": self.get_saved_result_model(name, summary_path)
+            })
+        return sorted(results, key=lambda item: item["mtime"], reverse=True)
+
+    def get_saved_result_model(self, name, summary_path):
+        if os.path.exists(summary_path):
+            try:
+                with open(summary_path, 'r', encoding='utf-8') as f:
+                    model = json.load(f).get("model")
+                if model:
+                    return str(model).lower()
+            except Exception:
+                pass
+
+        lowered = name.lower()
+        for model in ("gemini", "groq", "gpt"):
+            if f"-{model}-" in lowered:
+                return model
+        return "unknown"
+
+    def filter_history_results(self, results):
+        selected = self.history_model_filter_var.get() if hasattr(self, 'history_model_filter_var') else "전체"
+        model_map = {
+            "Gemini": "gemini",
+            "Groq": "groq",
+            "GPT": "gpt"
+        }
+        model = model_map.get(selected)
+        if not model:
+            return results
+        return [item for item in results if item.get("model") == model]
+
+    def refresh_history_results(self):
+        if not hasattr(self, 'history_list'):
+            return
+
+        for child in self.history_list.winfo_children():
+            child.destroy()
+        self.history_buttons.clear()
+
+        results = self.filter_history_results(self.list_saved_results())
+        self.update_history_totals(results)
+        if not results:
+            empty = ctk.CTkLabel(self.history_list, text="선택한 조건의 저장 결과가 없습니다.", font=self.font_subtitle, text_color=COLOR_MUTED)
+            empty.pack(pady=24)
+            return
+
+        for item in results:
+            btn = ctk.CTkButton(
+                self.history_list,
+                text=self.format_history_button_label(item),
+                anchor="w",
+                height=44,
+                fg_color=COLOR_PANEL_SOFT,
+                hover_color=COLOR_PANEL_LIFT,
+                text_color=COLOR_TEXT,
+                font=self.font_subtitle,
+                command=lambda selected=item: self.load_history_result(selected)
+            )
+            btn.pack(fill="x", pady=4, padx=4)
+            self.history_buttons.append(btn)
+
+    def update_history_totals(self, results):
+        total = 0
+        with_label = 0
+        correct = 0
+        completed = 0
+        by_risk = { "LOW": 0, "MEDIUM": 0, "HIGH": 0 }
+        confusion = {
+            "benignToBenign": 0,
+            "benignToPhishing": 0,
+            "phishingToBenign": 0,
+            "phishingToPhishing": 0
+        }
+
+        for item in results:
+            if not item.get("has_summary"):
+                continue
+            try:
+                with open(item["summary_path"], 'r', encoding='utf-8') as f:
+                    summary = json.load(f)
+            except Exception:
+                continue
+
+            completed += 1
+            total += int(summary.get("total", 0) or 0)
+            with_label += int(summary.get("withLabel", 0) or 0)
+            correct += int(summary.get("correct", 0) or 0)
+
+            for key, value in (summary.get("byRisk", {}) or {}).items():
+                by_risk[key] = by_risk.get(key, 0) + int(value or 0)
+            for key, value in (summary.get("confusion", {}) or {}).items():
+                confusion[key] = confusion.get(key, 0) + int(value or 0)
+
+        accuracy = (correct / with_label * 100) if with_label else None
+        self.history_total_label.configure(
+            text=f"누적 정확도: {'-' if accuracy is None else f'{accuracy:.2f}%'}"
+        )
+        self.history_total_detail_label.configure(
+            text=(
+                f"완료 {completed}회 | 정답 {correct}/{with_label} | 총 {total}건 | "
+                f"LOW {by_risk.get('LOW', 0)} MEDIUM {by_risk.get('MEDIUM', 0)} HIGH {by_risk.get('HIGH', 0)} | "
+                f"FP {confusion.get('benignToPhishing', 0)} FN {confusion.get('phishingToBenign', 0)}"
+            )
+        )
+
+    def format_history_button_label(self, item):
+        stamp = time.strftime('%m-%d %H:%M:%S', time.localtime(item["mtime"]))
+        base = item["name"].replace('phishing-prompt-', '').replace('.jsonl', '')
+        mark = "OK" if item["has_summary"] else "RUN"
+        return f"{mark}  {stamp}  [{item.get('model', '-')}]  {base}"
+
+    def load_history_result(self, item):
+        self.history_summary_box.delete("1.0", "end")
+        self.history_summary_box.insert("1.0", self.build_history_summary_text(item))
+        self.history_records_box.delete("1.0", "end")
+        self.history_records_box.insert("1.0", self.build_history_records_text(item["jsonl_path"]))
+
+    def build_history_summary_text(self, item):
+        lines = [
+            f"파일: {item['name']}",
+            f"저장 시각: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(item['mtime']))}",
+            f"JSONL: {item['jsonl_path']}",
+            ""
+        ]
+
+        if not item["has_summary"]:
+            lines.append("요약 파일이 없습니다. 실행이 중단되었거나 완료 전에 종료된 결과일 수 있습니다.")
+            return "\n".join(lines)
+
+        try:
+            with open(item["summary_path"], 'r', encoding='utf-8') as f:
+                summary = json.load(f)
+        except Exception as ex:
+            lines.append(f"요약 파일을 읽지 못했습니다: {ex}")
+            return "\n".join(lines)
+
+        accuracy = summary.get("accuracy")
+        by_risk = summary.get("byRisk", {})
+        by_expected = summary.get("byExpected", {})
+        confusion = summary.get("confusion", {})
+        lines.extend([
+            f"모델: {summary.get('model', '-')}",
+            f"데이터셋: {summary.get('datasetName', '-')}",
+            f"정확도: {'-' if accuracy is None else f'{accuracy * 100:.2f}%'}",
+            f"정답: {summary.get('correct', 0)} / {summary.get('withLabel', 0)}",
+            f"전체: {summary.get('total', 0)}",
+            "",
+            f"위험도 분포: LOW {by_risk.get('LOW', 0)} | MEDIUM {by_risk.get('MEDIUM', 0)} | HIGH {by_risk.get('HIGH', 0)}",
+            f"정답 라벨: benign {by_expected.get('benign', 0)} | phishing {by_expected.get('phishing', 0)}",
+            "",
+            f"TN benign->benign: {confusion.get('benignToBenign', 0)}",
+            f"FP benign->phishing: {confusion.get('benignToPhishing', 0)}",
+            f"FN phishing->benign: {confusion.get('phishingToBenign', 0)}",
+            f"TP phishing->phishing: {confusion.get('phishingToPhishing', 0)}",
+        ])
+        return "\n".join(lines)
+
+    def build_history_records_text(self, jsonl_path):
+        rows = []
+        try:
+            with open(jsonl_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        rows.append(json.loads(line))
+        except Exception as ex:
+            return f"결과 파일을 읽지 못했습니다: {ex}"
+
+        if not rows:
+            return "결과 레코드가 없습니다."
+
+        chunks = []
+        for index, record in enumerate(rows, 1):
+            chunks.append("\n".join([
+                f"[{index}] row={record.get('rowIndex')} expected={record.get('expectedName')} predicted={record.get('riskLevel')} correct={record.get('correct')}",
+                f"confidence={record.get('confidence')} model={record.get('model')}",
+                f"summary={record.get('summary', '')}",
+                f"indicators={', '.join(record.get('indicators', []) or [])}",
+                "-" * 90
+            ]))
+        return "\n".join(chunks)
+
     def start_manual_activity(self):
         """수동 분석 중임을 진행바 애니메이션으로 표시"""
         try:
@@ -733,6 +1146,30 @@ class PhishGuardGUI(ctk.CTk):
                     self.lbl_progress.configure(text=f"진행: {current} / {total}")
                     self.lbl_progress_percent.configure(text=f"{progress * 100:.0f}%")
                     self.batch_progress_bar.set(progress)
+                elif task_type == "download_progress":
+                    self.stop_batch_activity()
+                    percent = int(task.get("percent", 0))
+                    progress = min(max(percent / 100, 0), 1)
+                    self.lbl_status.configure(text="데이터셋 다운로드 중")
+                    self.lbl_progress.configure(text="다운로드")
+                    self.lbl_progress_percent.configure(text=f"{percent}%")
+                    self.batch_progress_bar.set(progress)
+                elif task_type == "api_progress":
+                    self.stop_batch_activity()
+                    current = int(task.get("current", 1))
+                    total = max(int(task.get("total", 1)), 1)
+                    progress = min(max((current - 0.5) / total, 0), 1)
+                    self.lbl_status.configure(text=f"API 응답 대기 중 ({current}/{total})")
+                    self.lbl_progress.configure(text=f"분석: {current} / {total}")
+                    self.lbl_progress_percent.configure(text=f"{progress * 100:.0f}%")
+                    self.batch_progress_bar.set(progress)
+                elif task_type == "phase_progress":
+                    self.stop_batch_activity()
+                    percent = int(task.get("percent", 0))
+                    self.lbl_status.configure(text=task.get("text", "진행 중"))
+                    self.lbl_progress.configure(text=task.get("phase", "준비"))
+                    self.lbl_progress_percent.configure(text=f"{percent}%")
+                    self.batch_progress_bar.set(min(max(percent / 100, 0), 1))
                 elif task_type == "metrics":
                     self.lbl_accuracy.configure(text=f"정확도: {task.get('accuracy')}")
                     self.lbl_distribution.configure(text=task.get("dist"))
@@ -743,6 +1180,7 @@ class PhishGuardGUI(ctk.CTk):
                 elif task_type == "ended":
                     self.stop_manual_activity()
                     self.stop_batch_activity()
+                    self.refresh_history_results()
                     if task.get("status") == "error":
                         self.lbl_status.configure(text="오류 발생")
                     elif task.get("status") == "stopped":
@@ -763,6 +1201,7 @@ class PhishGuardGUI(ctk.CTk):
         # 플레이스홀더가 존재하면 삭제
         if hasattr(self, 'lbl_results_placeholder') and self.lbl_results_placeholder:
             self.lbl_results_placeholder.destroy()
+            self.lbl_results_placeholder = None
             
         index = len(self.batch_records)
         self.batch_records.append(record)
@@ -776,21 +1215,21 @@ class PhishGuardGUI(ctk.CTk):
             widget.bind("<Button-1>", lambda e, r=record, c=card: self.on_select_record(r, c))
             
         # 요소 1: 행 번호
-        lbl_idx = ctk.CTkLabel(card, text=f"[{index + 1}]", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=COLOR_MUTED)
+        lbl_idx = ctk.CTkLabel(card, text=f"[{index + 1}]", font=ctk.CTkFont(family=self.ui_font_family, size=10, weight="bold"), text_color=COLOR_MUTED)
         lbl_idx.pack(side="left", padx=(12, 10))
         lbl_idx.bind("<Button-1>", lambda e, r=record, c=card: self.on_select_record(r, c))
         
         # 요소 2: 실제 라벨 (Expected)
         expected = record.get("expectedName", "unknown")
         exp_color = COLOR_GREEN if expected == "benign" else COLOR_RED
-        lbl_exp = ctk.CTkLabel(card, text=f"실제: {expected}", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=exp_color)
+        lbl_exp = ctk.CTkLabel(card, text=f"실제: {expected}", font=ctk.CTkFont(family=self.ui_font_family, size=10, weight="bold"), text_color=exp_color)
         lbl_exp.pack(side="left", padx=10)
         lbl_exp.bind("<Button-1>", lambda e, r=record, c=card: self.on_select_record(r, c))
         
         # 요소 3: 예측 등급 (Predicted)
         risk = record.get("riskLevel", "LOW")
         risk_color = COLOR_RED if risk == "HIGH" else (COLOR_ORANGE if risk == "MEDIUM" else COLOR_GREEN)
-        lbl_risk = ctk.CTkLabel(card, text=f"예측: {risk}", font=ctk.CTkFont(family="Segoe UI", size=10, weight="bold"), text_color=risk_color)
+        lbl_risk = ctk.CTkLabel(card, text=f"예측: {risk}", font=ctk.CTkFont(family=self.ui_font_family, size=10, weight="bold"), text_color=risk_color)
         lbl_risk.pack(side="left", padx=10)
         lbl_risk.bind("<Button-1>", lambda e, r=record, c=card: self.on_select_record(r, c))
         
@@ -806,12 +1245,38 @@ class PhishGuardGUI(ctk.CTk):
         summary_txt = record.get("summary", "")
         if len(summary_txt) > 65:
             summary_txt = summary_txt[:62] + "..."
-        lbl_summary = ctk.CTkLabel(card, text=summary_txt, font=ctk.CTkFont(family="Segoe UI", size=11), text_color=COLOR_TEXT, anchor="w")
+        lbl_summary = ctk.CTkLabel(card, text=summary_txt, font=ctk.CTkFont(family=self.ui_font_family, size=11), text_color=COLOR_TEXT, anchor="w")
         lbl_summary.pack(side="left", fill="x", expand=True, padx=(10, 12))
         lbl_summary.bind("<Button-1>", lambda e, r=record, c=card: self.on_select_record(r, c))
         
         # 관리 리스트에 넣어 색상 토글 지원
         self.batch_card_widgets.append((card, record))
+
+    def add_batch_run_separator(self, model, dataset, limit, local_path, repeat_count=1):
+        if hasattr(self, 'lbl_results_placeholder') and self.lbl_results_placeholder:
+            self.lbl_results_placeholder.destroy()
+            self.lbl_results_placeholder = None
+
+        run_no = 1 + sum(
+            1 for child in self.results_scroll.winfo_children()
+            if getattr(child, "is_run_separator", False)
+        )
+        source = os.path.basename(local_path) if local_path else dataset
+        label = f"RUN {run_no}  |  {time.strftime('%H:%M:%S')}  |  {model.upper()}  |  {source}  |  {limit} samples x {repeat_count}"
+
+        sep = ctk.CTkFrame(self.results_scroll, fg_color=COLOR_PANEL_LIFT, corner_radius=6, height=30)
+        sep.is_run_separator = True
+        sep.pack(fill="x", pady=(10, 6), padx=6)
+        sep.pack_propagate(False)
+
+        lbl = ctk.CTkLabel(
+            sep,
+            text=label,
+            font=self.font_badge,
+            text_color=COLOR_MUTED,
+            anchor="w"
+        )
+        lbl.pack(fill="both", expand=True, padx=12)
 
     def on_select_record(self, record, clicked_card):
         # 모든 카드 배경 원래대로
@@ -866,18 +1331,14 @@ class PhishGuardGUI(ctk.CTk):
         self.batch_progress_bar.set(0)
         self.start_batch_activity()
         
-        # 기존 카드/리스트 초기화
-        for card, _ in self.batch_card_widgets:
-            card.destroy()
-        self.batch_card_widgets.clear()
-        self.batch_records.clear()
+        # 결과 카드는 누적합니다. 로그/상세창만 현재 실행 기준으로 정리합니다.
         self.log_box.delete("1.0", "end")
         self.details_box.delete("1.0", "end")
         self.details_box.insert("1.0", "일괄 분석 중입니다...")
         
         # 모델명 및 데이터셋 단축값 매칭
         model_map = {
-            "Gemini 3.1 Flash Lite Preview": "gemini",
+            "Gemini 3.1 Flash Lite": "gemini",
             "Groq Llama 3.3 70B": "groq",
             "GPT-4o": "gpt"
         }
@@ -890,17 +1351,32 @@ class PhishGuardGUI(ctk.CTk):
         }
         
         model_val = model_map[self.batch_model_var.get()]
+        if not self.has_api_key_for_model(model_val):
+            model_label = self.batch_model_var.get()
+            message = f"{model_label} API 키가 없습니다. 왼쪽 API Key 입력란에 키를 넣거나 .env에 저장해 주세요."
+            self.append_log(f"\n{message}\n")
+            self.append_api_console(f"\n{message}\n")
+            self.details_box.delete("1.0", "end")
+            self.details_box.insert("1.0", message)
+            messagebox.showwarning("API Key 없음", message)
+            self.reset_batch_run_state("API 키 없음")
+            return
+
         dataset_val = dataset_map[self.batch_dataset_var.get()]
         limit_val = int(self.batch_limit_slider.get())
         offset_val = int(self.batch_offset_slider.get())
         delay_val = int(self.batch_delay_slider.get())
+        repeat_count_val = int(self.batch_repeat_slider.get())
+        repeat_pause_val = int(self.batch_repeat_pause_slider.get()) * 1000
         balanced = self.batch_balanced_switch.get()
+        local_dataset_path = self.batch_local_dataset_var.get().strip()
         self.lbl_progress.configure(text=f"진행: 0 / {limit_val}")
+        self.add_batch_run_separator(model_val, dataset_val, limit_val, local_dataset_path, repeat_count_val)
         
         # 비동기 실행 스레드 기동
         thread = threading.Thread(
             target=self.execute_node_subprocess,
-            args=(model_val, dataset_val, limit_val, offset_val, delay_val, balanced, False),
+            args=(model_val, dataset_val, limit_val, offset_val, delay_val, balanced, local_dataset_path, 5, 0, repeat_count_val, repeat_pause_val),
             daemon=True
         )
         thread.start()
@@ -961,38 +1437,57 @@ class PhishGuardGUI(ctk.CTk):
             return
             
         model_map = {
-            "Gemini 3.1 Flash Lite Preview": "gemini",
+            "Gemini 3.1 Flash Lite": "gemini",
             "Groq Llama 3.3 70B": "groq",
             "GPT-4o": "gpt"
         }
         model_val = model_map[self.manual_model_var.get()]
+        if not self.has_api_key_for_model(model_val):
+            model_label = self.manual_model_var.get()
+            message = f"{model_label} API 키가 없습니다. 왼쪽 API Key 입력란에 키를 넣거나 .env에 저장해 주세요."
+            self.append_manual_log(f"\n{message}\n")
+            self.append_api_console(f"\n{message}\n")
+            messagebox.showwarning("API Key 없음", message)
+            self.stop_manual_activity()
+            self.process_running = False
+            self.btn_mrun.configure(state="normal")
+            self.btn_mreset.configure(state="normal")
+            self.lbl_risk_badge.configure(text="API 키 없음", fg_color=COLOR_PANEL_LIFT, text_color=COLOR_MUTED)
+            return
         
         # 수동 분석 비동기 스레드 기동 (temp_custom 데이터셋 이용)
         thread = threading.Thread(
             target=self.execute_node_subprocess,
-            args=(model_val, "temp_custom", 1, 0, 0, False, temp_json_path),
+            args=(model_val, "temp_custom", 1, 0, 0, False, temp_json_path, 1, 0, 1, 0),
             daemon=True
         )
         thread.start()
 
-    def execute_node_subprocess(self, model, dataset, limit, offset, delay, balanced, local_path):
+    def execute_node_subprocess(self, model, dataset, limit, offset, delay, balanced, local_path, chunk_count=5, chunk_pause=0, repeat_count=1, repeat_pause=0):
         """스레드 내부에서 호출되는 노드 CLI 구동용 유틸"""
-        proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__)), '..')
+        proj_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
         cli_script = os.path.join(proj_dir, 'tools', 'evaluate-phishing-prompt.mjs')
         
         cmd = ["node", cli_script, "--model", model, "--dataset", dataset]
         if local_path:
             cmd += ["--local", local_path]
-        else:
-            cmd += ["--limit", str(limit), "--offset", str(offset), "--delay", str(delay)]
-            if not balanced:
-                cmd += ["--no-balanced"]
+        cmd += [
+            "--limit", str(limit),
+            "--offset", str(offset),
+            "--delay", str(delay),
+            "--chunk-count", str(chunk_count),
+            "--chunk-pause", str(chunk_pause),
+            "--repeat", str(repeat_count),
+            "--repeat-pause", str(repeat_pause)
+        ]
+        if not balanced:
+            cmd += ["--no-balanced"]
                 
         # 로그 알림 전송
-        target_log_type = "mlog" if local_path else "log"
+        target_log_type = "mlog" if dataset == "temp_custom" else "log"
         self.gui_queue.put({"type": target_log_type, "message": f"실행 커맨드: {' '.join(cmd)}\n\n"})
         self.gui_queue.put({"type": target_log_type, "message": "데이터셋 준비 및 API 응답을 기다리는 중입니다...\n"})
-        self.gui_queue.put({"type": "status" if not local_path else "mstatus", "text": "데이터셋/API 대기 중..."})
+        self.gui_queue.put({"type": "mstatus" if dataset == "temp_custom" else "status", "text": "데이터셋/API 대기 중..."})
         
         # 이전 분석 리스트 캐싱 삭제를 위해 파일 위치 파악 준비
         last_jsonl_mtime = 0
@@ -1024,11 +1519,25 @@ class PhishGuardGUI(ctk.CTk):
                 if not self.process_running:
                     break
                 self.gui_queue.put({"type": target_log_type, "message": line})
+                download_match = re.search(r'데이터셋 다운로드:\s+(\d+)%', line)
+                if download_match and dataset != "temp_custom":
+                    self.gui_queue.put({"type": "download_progress", "percent": int(download_match.group(1))})
+                if "데이터셋 로드 완료" in line and dataset != "temp_custom":
+                    self.gui_queue.put({"type": "phase_progress", "text": "데이터셋 로드 완료", "phase": "샘플 준비", "percent": 5})
+                if "평가 샘플 선택 완료" in line and dataset != "temp_custom":
+                    self.gui_queue.put({"type": "phase_progress", "text": "평가 샘플 선택 완료", "phase": "API 준비", "percent": 8})
+                api_match = re.search(r'\[(\d+)/(\d+)\]\s+API (?:배치 )?호출 중', line)
+                if api_match and dataset != "temp_custom":
+                    self.gui_queue.put({
+                        "type": "api_progress",
+                        "current": int(api_match.group(1)),
+                        "total": int(api_match.group(2))
+                    })
                 
                 # 정규식을 이용해 진행 현황 분석
                 # 예: [1/12] OK row=0 expected=benign predicted=LOW confidence=90
                 prog_match = re.search(r'\[(\d+)/(\d+)\]\s+(\w+)\s+row=(\d+)\s+expected=(\w+)\s+predicted=(\w+)\s+confidence=(\d+)', line)
-                if prog_match and not local_path:
+                if prog_match and dataset != "temp_custom":
                     curr, total = int(prog_match.group(1)), int(prog_match.group(2))
                     self.gui_queue.put({"type": "progress", "current": curr, "total": total})
                     
@@ -1042,7 +1551,7 @@ class PhishGuardGUI(ctk.CTk):
                 # 일괄 평가 완료 정확도 통계 문구 감지
                 # 예: - 정확도: 0.9167, LOW: 1, MEDIUM: 0, HIGH: 11
                 acc_match = re.search(r'-\s+결과:.*\.jsonl', line)
-                if acc_match and not local_path:
+                if acc_match and dataset != "temp_custom":
                     # 최종 완료된 요약 정보를 최신 JSONL 근처에서 파싱
                     latest_file = self.find_latest_jsonl(proj_dir, model, dataset)
                     if latest_file:
@@ -1067,12 +1576,15 @@ class PhishGuardGUI(ctk.CTk):
                 end_status = "stopped"
             
             # 완료 후 최종 수동 분석 기록 수신 처리
-            if local_path:
+            if dataset == "temp_custom":
                 latest_file = self.find_latest_jsonl(proj_dir, model, dataset)
                 if latest_file and os.path.getmtime(latest_file) > last_jsonl_mtime:
                     rec = self.read_last_jsonl_line(latest_file)
                     if rec:
                         self.gui_queue.put({"type": "mrecord", "record": rec})
+            elif return_code == 0:
+                latest_file = self.find_latest_jsonl(proj_dir, model, dataset)
+                self.queue_summary_metrics(latest_file)
             if return_code != 0:
                 self.gui_queue.put({"type": target_log_type, "message": f"\n프로세스가 오류 코드 {return_code}로 종료되었습니다.\n"})
                 end_status = "error"
@@ -1095,6 +1607,36 @@ class PhishGuardGUI(ctk.CTk):
         if not files:
             return None
         return max(files, key=os.path.getmtime)
+
+    def queue_summary_metrics(self, jsonl_path):
+        if not jsonl_path:
+            return
+
+        summary_file = jsonl_path.replace('.jsonl', '.summary.json')
+        if not os.path.exists(summary_file):
+            return
+
+        try:
+            with open(summary_file, 'r', encoding='utf-8') as sf:
+                summary = json.load(sf)
+
+            accuracy = summary.get('accuracy')
+            accuracy_pct = '-' if accuracy is None else f"{accuracy * 100:.2f}%"
+            by_risk = summary.get('byRisk', {})
+            confusion = summary.get('confusion', {})
+            dist_str = (
+                f"총 {summary.get('total', 0)}   "
+                f"정답 {summary.get('correct', 0)} / {summary.get('withLabel', 0)}   "
+                f"LOW {by_risk.get('LOW', 0)}   MEDIUM {by_risk.get('MEDIUM', 0)}   HIGH {by_risk.get('HIGH', 0)}   "
+                f"FP {confusion.get('benignToPhishing', 0)}   FN {confusion.get('phishingToBenign', 0)}"
+            )
+            self.gui_queue.put({
+                "type": "metrics",
+                "accuracy": accuracy_pct,
+                "dist": dist_str
+            })
+        except Exception as ex:
+            self.gui_queue.put({"type": "log", "message": f"\n통계 파일을 읽지 못했습니다: {ex}\n"})
 
     def read_last_jsonl_line(self, file_path):
         try:
@@ -1177,10 +1719,10 @@ class PhishGuardGUI(ctk.CTk):
                 txt_frame.pack(side="left", fill="both", expand=True, padx=(2, 10), pady=6)
                 
                 title_color = COLOR_TEXT if flagged else COLOR_MUTED
-                lbl_title = ctk.CTkLabel(txt_frame, text=item.get("text", ""), font=ctk.CTkFont(family="Segoe UI", size=11, weight="bold"), text_color=title_color, anchor="w")
+                lbl_title = ctk.CTkLabel(txt_frame, text=item.get("text", ""), font=ctk.CTkFont(family=self.ui_font_family, size=11, weight="bold"), text_color=title_color, anchor="w")
                 lbl_title.pack(fill="x", side="top")
                 
-                lbl_reason = ctk.CTkLabel(txt_frame, text=item.get("reason", ""), font=ctk.CTkFont(family="Segoe UI", size=10), text_color=COLOR_MUTED, anchor="w", justify="left")
+                lbl_reason = ctk.CTkLabel(txt_frame, text=item.get("reason", ""), font=ctk.CTkFont(family=self.ui_font_family, size=10), text_color=COLOR_MUTED, anchor="w", justify="left")
                 lbl_reason.pack(fill="x", side="top", pady=(2, 0))
         else:
             lbl_no = ctk.CTkLabel(self.chk_scroll, text="체크리스트 정보가 수신되지 않았습니다.", font=self.font_subtitle, text_color=COLOR_MUTED)
@@ -1208,7 +1750,7 @@ class PhishGuardGUI(ctk.CTk):
         self.manual_body.delete("1.0", "end")
         self.manual_body.insert("1.0", "보안 문제로 인해 귀하의 계정이 일시 잠금되었습니다. 아래의 외부 인증 주소를 클릭하여 24시간 내에 본인 인증을 처리하지 않을 경우 계정이 전면 삭제 조치됩니다.\n\nhttp://phishguard-test-fake.com/login")
         
-        self.combo_mmodel.set("Gemini 3.1 Flash Lite Preview")
+        self.combo_mmodel.set("Gemini 3.1 Flash Lite")
         
         # 우측 카드 초기화
         self.lbl_risk_badge.configure(text="분석 대기", fg_color=COLOR_PANEL_LIFT, text_color=COLOR_MUTED)
