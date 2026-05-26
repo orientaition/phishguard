@@ -10,8 +10,11 @@ const BACKGROUND_PATH = path.join(PROJECT_ROOT, 'src', 'background.js');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'eval-results');
 const CACHE_DIR = path.join(PROJECT_ROOT, '.cache', 'phishguard-eval');
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3.5:9b';
+const OLLAMA_CHAT_URL = process.env.OLLAMA_CHAT_URL || 'http://localhost:11434/api/chat';
 const DATASET_FETCH_TIMEOUT_MS = 60_000;
 const MODEL_FETCH_TIMEOUT_MS = 90_000;
+const OLLAMA_FETCH_TIMEOUT_MS = 300_000;
 
 export const DATASET_URLS = {
   texts: 'https://huggingface.co/datasets/ealvaradob/phishing-dataset/resolve/main/texts.json',
@@ -284,11 +287,12 @@ function printHelp() {
   console.log(`사용법:
   node tools/evaluate-phishing-prompt.mjs --model gemini --limit 12
   node tools/evaluate-phishing-prompt.mjs --model groq --dataset texts --limit 8
+  node tools/evaluate-phishing-prompt.mjs --model ollama --limit 4
   node tools/evaluate-phishing-prompt.mjs --dry-run --limit 2
   node tools/evaluate-phishing-prompt.mjs --local data/texts.json --limit 20
 
 옵션:
-  --model gemini|groq|gpt        호출할 모델입니다. 기본값은 gemini입니다.
+  --model gemini|groq|gpt|ollama 호출할 모델입니다. 기본값은 gemini입니다.
   --dataset texts|urls|webs|combined_reduced|combined_full
                                Hugging Face에서 받을 파일입니다. 기본값은 texts입니다.
   --source URL                  직접 받을 JSON URL입니다.
@@ -362,6 +366,10 @@ async function loadEnv() {
 }
 
 function getApiKey(model, env) {
+  if (model === 'ollama') {
+    return '';
+  }
+
   const candidates = {
     gemini: ['GEMINI_API_KEY', 'GOOGLE_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'gemini_key', 'gemini_api_key'],
     groq: ['GROQ_API_KEY', 'groq_key', 'groq_api_key'],
@@ -642,6 +650,33 @@ function makeSyntheticSubject(text) {
 }
 
 async function callModel({ model, apiKey, systemPrompt, userPrompt, signal }) {
+  if (model === 'ollama') {
+    const response = await fetchWithTimeout(OLLAMA_CHAT_URL, {
+      method: 'POST',
+      signal,
+      timeoutMs: OLLAMA_FETCH_TIMEOUT_MS,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        stream: false,
+        think: false,
+        format: 'json',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        options: { temperature: 0.1 }
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama API error: HTTP ${response.status} ${await response.text()}`);
+    }
+
+    const data = await response.json();
+    return data?.message?.content || data?.response || '';
+  }
+
   if (model === 'groq') {
     const response = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',

@@ -31,6 +31,14 @@ COLOR_RED_PANEL = "#210707"
 COLOR_ORANGE = "#F5A524"
 COLOR_GREEN = "#20D07A"
 COLOR_CONSOLE_BG = "#000000"
+OLLAMA_LABEL = "Ollama Local (qwen3.5:9b)"
+MODEL_OPTIONS = ["Gemini 3.1 Flash Lite", "Groq Llama 3.3 70B", "GPT-4o", OLLAMA_LABEL]
+MODEL_MAP = {
+    "Gemini 3.1 Flash Lite": "gemini",
+    "Groq Llama 3.3 70B": "groq",
+    "GPT-4o": "gpt",
+    OLLAMA_LABEL: "ollama",
+}
 
 class PhishGuardGUI(ctk.CTk):
     def __init__(self):
@@ -139,6 +147,9 @@ class PhishGuardGUI(ctk.CTk):
         return ""
 
     def has_api_key_for_model(self, model):
+        if model == "ollama":
+            return True
+
         key_map = {
             "gemini": ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "gemini_key", "gemini_api_key"],
             "groq": ["GROQ_API_KEY", "groq_key", "groq_api_key"],
@@ -223,6 +234,8 @@ class PhishGuardGUI(ctk.CTk):
             "groq": ["GROQ_API_KEY"],
             "gpt": ["OPENAI_API_KEY"],
         }
+        env.setdefault("OLLAMA_MODEL", "qwen3.5:9b")
+        env.setdefault("OLLAMA_CHAT_URL", "http://localhost:11434/api/chat")
         for model, keys in key_map.items():
             value = self.api_key_vars[model].get().strip()
             if value:
@@ -340,7 +353,7 @@ class PhishGuardGUI(ctk.CTk):
         self.create_section_label(self.batch_scroll, "인공지능 모델 (AI Model)")
         self.batch_model_var = ctk.StringVar(value="Gemini 3.1 Flash Lite")
         self.combo_model = ctk.CTkOptionMenu(
-            self.batch_scroll, values=["Gemini 3.1 Flash Lite", "Groq Llama 3.3 70B", "GPT-4o"],
+            self.batch_scroll, values=MODEL_OPTIONS,
             variable=self.batch_model_var, fg_color=COLOR_PANEL_SOFT, button_color=COLOR_PANEL_LIFT,
             button_hover_color=COLOR_LINE, dropdown_fg_color=COLOR_PANEL, text_color=COLOR_TEXT, font=self.font_value
         )
@@ -597,7 +610,7 @@ class PhishGuardGUI(ctk.CTk):
         self.create_section_label(self.manual_scroll, "인공지능 모델 (AI Model)")
         self.manual_model_var = ctk.StringVar(value="Gemini 3.1 Flash Lite")
         self.combo_mmodel = ctk.CTkOptionMenu(
-            self.manual_scroll, values=["Gemini 3.1 Flash Lite", "Groq Llama 3.3 70B", "GPT-4o"],
+            self.manual_scroll, values=MODEL_OPTIONS,
             variable=self.manual_model_var, fg_color=COLOR_PANEL_SOFT, button_color=COLOR_PANEL_LIFT,
             button_hover_color=COLOR_LINE, dropdown_fg_color=COLOR_PANEL, text_color=COLOR_TEXT, font=self.font_value
         )
@@ -741,7 +754,7 @@ class PhishGuardGUI(ctk.CTk):
         self.history_model_filter_var = ctk.StringVar(value="전체")
         self.history_model_filter = ctk.CTkOptionMenu(
             self.history_left,
-            values=["전체", "Gemini", "Groq", "GPT"],
+            values=["전체", "Gemini", "Groq", "GPT", "Ollama"],
             variable=self.history_model_filter_var,
             fg_color=COLOR_PANEL_SOFT,
             button_color=COLOR_PANEL_LIFT,
@@ -919,7 +932,7 @@ class PhishGuardGUI(ctk.CTk):
                 pass
 
         lowered = name.lower()
-        for model in ("gemini", "groq", "gpt"):
+        for model in ("gemini", "groq", "gpt", "ollama"):
             if f"-{model}-" in lowered:
                 return model
         return "unknown"
@@ -929,7 +942,8 @@ class PhishGuardGUI(ctk.CTk):
         model_map = {
             "Gemini": "gemini",
             "Groq": "groq",
-            "GPT": "gpt"
+            "GPT": "gpt",
+            "Ollama": "ollama"
         }
         model = model_map.get(selected)
         if not model:
@@ -1337,11 +1351,7 @@ class PhishGuardGUI(ctk.CTk):
         self.details_box.insert("1.0", "일괄 분석 중입니다...")
         
         # 모델명 및 데이터셋 단축값 매칭
-        model_map = {
-            "Gemini 3.1 Flash Lite": "gemini",
-            "Groq Llama 3.3 70B": "groq",
-            "GPT-4o": "gpt"
-        }
+        model_map = MODEL_MAP
         dataset_map = {
             "texts.json (이메일 텍스트)": "texts",
             "urls.json (피싱 URL)": "urls",
@@ -1436,11 +1446,7 @@ class PhishGuardGUI(ctk.CTk):
             self.lbl_risk_badge.configure(text="분석 대기", fg_color=COLOR_PANEL_LIFT, text_color=COLOR_MUTED)
             return
             
-        model_map = {
-            "Gemini 3.1 Flash Lite": "gemini",
-            "Groq Llama 3.3 70B": "groq",
-            "GPT-4o": "gpt"
-        }
+        model_map = MODEL_MAP
         model_val = model_map[self.manual_model_var.get()]
         if not self.has_api_key_for_model(model_val):
             model_label = self.manual_model_var.get()
