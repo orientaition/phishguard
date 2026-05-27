@@ -10,6 +10,7 @@ const BACKGROUND_PATH = path.join(PROJECT_ROOT, 'src', 'background.js');
 const OUTPUT_DIR = path.join(PROJECT_ROOT, 'eval-results');
 const CACHE_DIR = path.join(PROJECT_ROOT, '.cache', 'phishguard-eval');
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
+const GPT_MODEL = 'gpt-5.5';
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen3.5:9b';
 const OLLAMA_CHAT_URL = process.env.OLLAMA_CHAT_URL || 'http://localhost:11434/api/chat';
 const DATASET_FETCH_TIMEOUT_MS = 60_000;
@@ -715,7 +716,7 @@ async function callModel({ model, apiKey, systemPrompt, userPrompt, signal }) {
         Authorization: `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'gpt-4o',
+        model: GPT_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }

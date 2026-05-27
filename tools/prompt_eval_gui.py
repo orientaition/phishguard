@@ -32,11 +32,12 @@ COLOR_ORANGE = "#F5A524"
 COLOR_GREEN = "#20D07A"
 COLOR_CONSOLE_BG = "#000000"
 OLLAMA_LABEL = "Ollama Local (qwen3.5:9b)"
-MODEL_OPTIONS = ["Gemini 3.1 Flash Lite", "Groq Llama 3.3 70B", "GPT-4o", OLLAMA_LABEL]
+GPT_LABEL = "GPT-5.5"
+MODEL_OPTIONS = ["Gemini 3.1 Flash Lite", "Groq Llama 3.3 70B", GPT_LABEL, OLLAMA_LABEL]
 MODEL_MAP = {
     "Gemini 3.1 Flash Lite": "gemini",
     "Groq Llama 3.3 70B": "groq",
-    "GPT-4o": "gpt",
+    GPT_LABEL: "gpt",
     OLLAMA_LABEL: "ollama",
 }
 

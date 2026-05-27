@@ -2,6 +2,7 @@
 
 const API_RESPONSE_LOGS_KEY = 'apiResponseLogs';
 const API_RESPONSE_LOG_LIMIT = 80;
+const GPT_MODEL = 'gpt-5.5';
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 const OLLAMA_MODEL = 'qwen3.5:9b';
 const OLLAMA_CHAT_URL = 'http://localhost:11434/api/chat';
@@ -133,7 +134,7 @@ async function requestModelJson(sys, usr, stored, expectedType, logContext = {})
         method : 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body   : JSON.stringify({
-          model          : 'gpt-4o',
+          model          : GPT_MODEL,
           messages       : [{ role: 'system', content: sys }, { role: 'user', content: usr }],
           temperature    : 0.1,
           response_format: { type: 'json_object' }
@@ -295,7 +296,7 @@ async function testModelConnection(payload = {}) {
       method : 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
       body   : JSON.stringify({
-        model          : 'gpt-4o',
+        model          : GPT_MODEL,
         messages       : [{ role: 'user', content: 'Return only JSON: {"ok":true}' }],
         temperature    : 0,
         response_format: { type: 'json_object' }
