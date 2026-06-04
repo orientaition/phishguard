@@ -59,7 +59,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleAnalysis({ body, metadata }, stored) {
   const sys = buildSystem();
   const usr = buildPrompt(metadata, body);
-  return requestModelJson(sys, usr, stored, 'email');
+  return requestModelJson(sys, usr, stored, 'email', {
+    subject    : metadata?.subject     || '',
+    sender     : metadata?.sender      || '',
+    senderEmail: metadata?.senderEmail || ''
+  });
 }
 
 async function handleMetadataAnalysis({ metadata, preRisk }, stored) {

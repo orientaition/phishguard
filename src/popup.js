@@ -299,16 +299,30 @@ if (btnReset) {
 // ── 통계 내보내기 ────────────────────────────────────────────────────
 if (btnExportStats) {
   btnExportStats.addEventListener('click', () => {
-    chrome.storage.local.get(['stats'], (data) => {
-      const s = data.stats || { high: 0, medium: 0, low: 0, total: 0 };
+    chrome.storage.local.get(['stats', 'apiResponseLogs'], (data) => {
+      const s    = data.stats || { high: 0, medium: 0, low: 0, total: 0 };
+      const logs = (data.apiResponseLogs || [])
+        .filter(log => log.type === 'email' && log.status === 'ok')
+        .map(log => ({
+          timestamp: new Date(log.at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }),
+          subject    : log.subject     || '',
+          sender     : log.sender      || '',
+          senderEmail: log.senderEmail || '',
+          model      : log.model       || '',
+          riskLevel  : log.riskLevel   || '',
+          confidence : log.confidence  ?? null,
+          durationMs : log.durationMs  ?? null
+        }));
+
       const exported = {
         exported_at: new Date().toISOString(),
         stats: {
-          total  : s.total  || 0,
-          high   : s.high   || 0,
-          medium : s.medium || 0,
-          low    : s.low    || 0
-        }
+          total : s.total  || 0,
+          high  : s.high   || 0,
+          medium: s.medium || 0,
+          low   : s.low    || 0
+        },
+        history: logs
       };
       const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
       const url  = URL.createObjectURL(blob);
