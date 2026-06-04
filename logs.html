@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>PhishGuard API Logs</title>
+  <style>
+    :root {
+      --bg: #fff;
+      --surface: #fff;
+      --surface-soft: #f8fafd;
+      --hover: #f1f3f4;
+      --text: #202124;
+      --text-secondary: #5f6368;
+      --muted: #9aa0a6;
+      --border: #e8eaed;
+      --hairline: #eef0f3;
+      --accent: #1a73e8;
+      --accent-bg: #e8f0fe;
+      --green: #188038;
+      --green-bg: #e6f4ea;
+      --green-border: #ceead6;
+      --yellow: #e37400;
+      --yellow-bg: #fef7e0;
+      --yellow-border: #fde293;
+      --red: #d93025;
+      --red-bg: #fce8e6;
+      --red-border: #f5c6c2;
+      --shadow: none;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Google Sans", Roboto, "Noto Sans KR", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app {
+      min-height: 100%;
+      display: grid;
+      grid-template-rows: auto auto 1fr;
+    }
+
+    .topbar {
+      background: var(--bg);
+      box-shadow: inset 0 -1px 0 var(--hairline);
+      padding: 16px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: var(--accent-bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--accent);
+      flex-shrink: 0;
+    }
+
+    .title { font-size: 16px; font-weight: 600; }
+    .subtitle { margin-top: 3px; font-size: 12px; color: var(--text-secondary); }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      height: 34px;
+      padding: 0 13px;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .btn:hover { background: var(--hover); color: var(--text); }
+    .btn.primary { color: var(--accent); background: var(--accent-bg); }
+    .btn.danger { color: var(--red); }
+    .btn.danger:hover { background: var(--red-bg); }
+
+    .filters {
+      background: var(--bg);
+      box-shadow: inset 0 -1px 0 var(--hairline);
+      padding: 12px 22px;
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .search {
+      height: 36px;
+      border: 1px solid transparent;
+      background: #f1f3f4;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0 12px;
+      outline: none;
+      font-size: 13px;
+    }
+
+    .select {
+      height: 36px;
+      border: 1px solid transparent;
+      background: #f1f3f4;
+      color: var(--text);
+      border-radius: 8px;
+      padding: 0 10px;
+      font-size: 13px;
+      outline: none;
+    }
+
+    .content {
+      padding: 0 22px 22px;
+      display: grid;
+      grid-template-columns: 224px minmax(0, 1fr);
+      gap: 22px;
+      min-height: 0;
+    }
+
+    .summary {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      padding: 18px 18px 0 0;
+      box-shadow: inset -1px 0 0 var(--hairline);
+    }
+
+    .metric {
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      padding: 13px 0;
+      box-shadow: none;
+      border-bottom: 1px solid var(--hairline);
+    }
+
+    .metric-label {
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .metric-value {
+      margin-top: 8px;
+      font-size: 26px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .metric.ok .metric-value { color: var(--green); }
+    .metric.error .metric-value { color: var(--red); }
+    .metric.note {
+      color: var(--text-secondary);
+      font-size: 12px;
+      line-height: 1.6;
+      border-bottom: 0;
+      padding-top: 16px;
+    }
+
+    .log-list {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      padding: 8px 2px 0 0;
+    }
+
+    .empty {
+      background: var(--bg);
+      border: 1px solid var(--hairline);
+      border-radius: 8px;
+      padding: 36px 18px;
+      text-align: center;
+      color: var(--text-secondary);
+      box-shadow: none;
+    }
+
+    .log-item {
+      background: var(--bg);
+      border: 0;
+      border-bottom: 1px solid var(--hairline);
+      border-radius: 0;
+      overflow: hidden;
+      box-shadow: none;
+      transition: background .12s ease;
+    }
+
+    .log-item:hover { background: #fcfcfd; }
+
+    .log-head {
+      padding: 14px 4px 14px 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .log-main {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+
+    .log-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      height: 22px;
+      border-radius: 999px;
+      padding: 0 8px;
+      font-size: 11px;
+      font-weight: 700;
+      border: 1px solid transparent;
+      color: var(--text-secondary);
+      background: var(--surface);
+    }
+
+    .pill.ok { color: var(--green); background: var(--green-bg); border-color: var(--green-border); }
+    .pill.error { color: var(--red); background: var(--red-bg); border-color: var(--red-border); }
+    .pill.medium { color: var(--yellow); background: var(--yellow-bg); border-color: var(--yellow-border); }
+    .pill.high { color: var(--red); background: var(--red-bg); border-color: var(--red-border); }
+    .pill.low { color: var(--accent); background: var(--accent-bg); border-color: #d2e3fc; }
+
+    .log-sub {
+      margin-top: 6px;
+      font-size: 12px;
+      color: var(--text-secondary);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px 12px;
+    }
+
+    .log-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .small-btn {
+      height: 28px;
+      padding: 0 10px;
+      border-radius: 7px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .small-btn:hover { background: var(--hover); color: var(--text); }
+
+    .detail {
+      border-top: 0;
+      background: var(--surface-soft);
+      color: #3c4043;
+      padding: 12px 14px;
+      margin: 0 0 14px 0;
+      border-radius: 8px;
+      font: 12px/1.65 Consolas, "SFMono-Regular", Menlo, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 270px;
+      overflow: auto;
+    }
+
+    .detail.full {
+      max-height: 620px;
+    }
+
+    .hidden { display: none; }
+
+    @media (max-width: 760px) {
+      .topbar, .filters { padding-left: 14px; padding-right: 14px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+      .toolbar { justify-content: flex-start; }
+      .filters { grid-template-columns: 1fr; }
+      .content { grid-template-columns: 1fr; padding: 14px; }
+      .summary { box-shadow: none; padding: 0; }
+      .summary { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .metric.note { grid-column: 1 / -1; }
+      .log-head { grid-template-columns: 1fr; }
+      .log-actions { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo" aria-hidden="true">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none">
+            <path d="M8 1L1.5 4.5V8c0 3.866 2.91 7 6.5 7s6.5-3.134 6.5-7V4.5L8 1z" stroke="currentColor" stroke-width="1.3"/>
+            <path d="M6 8l1.5 1.5L10 6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </div>
+        <div>
+          <div class="title">PhishGuard API 응답 로그</div>
+          <div class="subtitle">API 키와 메일 본문은 저장하지 않습니다.</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <button type="button" class="btn primary" id="refresh-btn">새로고침</button>
+        <button type="button" class="btn danger" id="clear-btn">로그 비우기</button>
+        <button type="button" class="btn" id="close-btn">닫기</button>
+      </div>
+    </header>
+
+    <section class="filters" aria-label="로그 필터">
+      <input class="search" id="search-input" type="search" placeholder="오류, HTTP 상태, 모델, 위험도 검색" autocomplete="off" />
+      <select class="select" id="status-filter">
+        <option value="all">전체 상태</option>
+        <option value="ok">성공</option>
+        <option value="error">실패</option>
+      </select>
+      <select class="select" id="type-filter">
+        <option value="all">전체 검사</option>
+        <option value="metadataBatch">간이검사 배치</option>
+        <option value="metadata">간이검사</option>
+        <option value="email">정밀검사</option>
+      </select>
+    </section>
+
+    <section class="content">
+      <aside class="summary" aria-label="로그 요약">
+        <div class="metric">
+          <div class="metric-label">전체 로그</div>
+          <div class="metric-value" id="count-total">0</div>
+        </div>
+        <div class="metric ok">
+          <div class="metric-label">성공</div>
+          <div class="metric-value" id="count-ok">0</div>
+        </div>
+        <div class="metric error">
+          <div class="metric-label">실패</div>
+          <div class="metric-value" id="count-error">0</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">최근 HTTP</div>
+          <div class="metric-value" id="latest-http">-</div>
+        </div>
+        <div class="metric note">
+          실패 원인이 `HTTP 429`면 요청 제한, `5xx`면 서버 오류 가능성이 큽니다. JSON 파싱 실패는 모델 응답 형식이 깨진 경우입니다.
+        </div>
+      </aside>
+
+      <section class="log-list" id="log-list" aria-label="API 로그 목록"></section>
+    </section>
+  </main>
+
+  <script src="logs.js"></script>
+</body>
+</html>
