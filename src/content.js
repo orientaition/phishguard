@@ -120,37 +120,71 @@
   const SELECTED_METADATA_GEMINI_BATCH_SIZE = 80;
 
   const SUSPICIOUS_KEYWORDS = [
+    // 영어 키워드
     'urgent', 'verify', 'suspended', 'password', 'login',
     'security alert', 'account locked', 'confirm now',
-    'click below', 'limited time', 'payment'
+    'click below', 'limited time', 'payment',
+    // 한국어 키워드
+    '긴급', '계정 정지', '비밀번호', '로그인', '인증',
+    '본인확인', '개인정보', '결제', '환불', '당첨',
+    '무료', '클릭', '지금 바로', '즉시', '제한',
+    '보안 경고', '계정 잠금', '확인 요망', '기간 만료',
+    '해킹', '유출', '정지', '차단', '업데이트 필요'
   ];
 
   // ── 브랜드명 → 공식 도메인 매핑 ──────────────────────────────────
   const BRAND_DOMAINS = {
-    'github'    : ['github.com', 'githubapp.com'],
-    'google'    : ['google.com', 'accounts.google.com', 'mail.google.com'],
-    'youtube'   : ['youtube.com', 'google.com'],
-    'microsoft' : ['microsoft.com', 'outlook.com', 'office.com', 'live.com'],
-    'apple'     : ['apple.com', 'icloud.com'],
-    'amazon'    : ['amazon.com', 'amazon.co.kr', 'amazonaws.com'],
-    'kakao'     : ['kakao.com', 'kakaocorp.com'],
-    'naver'     : ['naver.com', 'navercorp.com'],
-    'paypal'    : ['paypal.com'],
-    'netflix'   : ['netflix.com'],
-    'facebook'  : ['facebook.com', 'meta.com', 'facebookmail.com'],
-    'instagram' : ['instagram.com', 'facebookmail.com'],
-    'twitter'   : ['twitter.com', 'x.com'],
-    'notion'    : ['notion.so'],
-    'slack'     : ['slack.com'],
-    'anthropic' : ['anthropic.com'],
-    'supabase'  : ['supabase.com', 'supabase.io'],
-    'vercel'    : ['vercel.com'],
-    'aws'       : ['amazonaws.com', 'amazon.com'],
-    'samsung'   : ['samsung.com'],
-    'coupang'   : ['coupang.com'],
-    'toss'      : ['toss.im', 'viva-republica.com'],
-    'cgv'       : ['cgv.co.kr'],
-    'lotte'     : ['lotte.com', 'lottecinema.co.kr'],
+    // 글로벌 IT
+    'github'       : ['github.com', 'githubapp.com'],
+    'google'       : ['google.com', 'accounts.google.com', 'mail.google.com', 'google.co.kr'],
+    'youtube'      : ['youtube.com', 'google.com'],
+    'microsoft'    : ['microsoft.com', 'outlook.com', 'office.com', 'live.com', 'hotmail.com'],
+    'apple'        : ['apple.com', 'icloud.com'],
+    'amazon'       : ['amazon.com', 'amazon.co.kr', 'amazonaws.com'],
+    'paypal'       : ['paypal.com'],
+    'netflix'      : ['netflix.com'],
+    'facebook'     : ['facebook.com', 'meta.com', 'facebookmail.com'],
+    'instagram'    : ['instagram.com', 'facebookmail.com'],
+    'twitter'      : ['twitter.com', 'x.com'],
+    'notion'       : ['notion.so'],
+    'slack'        : ['slack.com'],
+    'anthropic'    : ['anthropic.com'],
+    'openai'       : ['openai.com'],
+    'supabase'     : ['supabase.com', 'supabase.io'],
+    'vercel'       : ['vercel.com'],
+    'aws'          : ['amazonaws.com', 'amazon.com'],
+    'dropbox'      : ['dropbox.com'],
+    'adobe'        : ['adobe.com'],
+    'zoom'         : ['zoom.us'],
+    // 한국 IT/금융/커머스
+    'kakao'        : ['kakao.com', 'kakaocorp.com', 'kakaobank.com', 'kakaopay.com'],
+    'naver'        : ['naver.com', 'navercorp.com', 'naver.net'],
+    'samsung'      : ['samsung.com', 'samsung.net'],
+    'coupang'      : ['coupang.com'],
+    'toss'         : ['toss.im', 'viva-republica.com'],
+    'cgv'          : ['cgv.co.kr'],
+    'lotte'        : ['lotte.com', 'lottecinema.co.kr', 'lotte.co.kr'],
+    'kb'           : ['kbcard.com', 'kbstar.com', 'liivmate.com'],
+    'shinhan'      : ['shinhan.com', 'shinhancard.com'],
+    '신한'         : ['shinhan.com', 'shinhancard.com'],
+    'hana'         : ['hanabank.com', 'hanacard.co.kr'],
+    '하나'         : ['hanabank.com', 'hanacard.co.kr'],
+    'woori'        : ['wooribank.com', 'wooricard.com'],
+    '우리'         : ['wooribank.com', 'wooricard.com'],
+    'kia'          : ['kia.com', 'kia.co.kr'],
+    'hyundai'      : ['hyundai.com', 'hyundaicard.com'],
+    '현대'         : ['hyundai.com', 'hyundaicard.com'],
+    'kt'           : ['kt.com', 'olleh.com'],
+    'skt'          : ['skt.com', 'tworld.co.kr', 'sk.com'],
+    'lgu'          : ['lguplus.com', 'uplus.co.kr'],
+    'gmarket'      : ['gmarket.co.kr', 'ebaykorea.com'],
+    '11st'         : ['11st.co.kr'],
+    'oliveyoung'   : ['oliveyoung.co.kr'],
+    'musinsa'      : ['musinsa.com'],
+    'baemin'       : ['baemin.com', 'woowahan.com'],
+    '배민'         : ['baemin.com', 'woowahan.com'],
+    'yogiyo'       : ['yogiyo.co.kr'],
+    'tmoney'       : ['tmoney.co.kr'],
   };
 
   // ══════════════════════════════════════════════
@@ -213,6 +247,21 @@
     chrome.storage.onChanged.addListener((changes, area) => {
       if (area !== 'local') return;
       updateRiskDataCacheFromChanges(changes);
+
+      // 개발자 모드 토글 감지 → 비교 버튼 즉시 표시/제거
+      if (changes.devMode) {
+        if (changes.devMode.newValue) {
+          safeStorageGet(['pendingCompareBody'], (d) => {
+            if (d.pendingCompareBody) {
+              _renderCompareButton(d.pendingCompareBody.body, d.pendingCompareBody.metadata);
+            }
+          });
+        } else {
+          document.getElementById('pg-compare-btn')?.remove();
+          document.getElementById('pg-compare-root')?.remove();
+        }
+      }
+
       if (changes.blacklist || changes.whitelist || changes[MAIL_RISK_DB_KEY]) {
         // 모든 row의 스캔/인터셉트 상태 초기화
         resetInboxScanState();
@@ -1565,6 +1614,11 @@
             ]);
             if (!isCurrentEmailView(metadata)) return;
             showPanel('result', response.result, metadata);
+            // 분석 완료 후 body/metadata 임시 저장 + 비교 버튼 표시
+            safeStorageGet(['devMode'], (d) => {
+              chrome.storage.local.set({ pendingCompareBody: { body, metadata } });
+              if (d.devMode) _renderCompareButton(body, metadata);
+            });
           }
         );
       } catch (_) {
@@ -1750,6 +1804,125 @@
     });
     btnObs.observe(document.body, { childList: true, subtree: false });
   }
+
+  // ══════════════════════════════════════════════
+  // UI: 모델 비교 분석 버튼
+  // ══════════════════════════════════════════════
+
+  function _renderCompareButton(body, metadata) {
+    document.getElementById('pg-compare-btn')?.remove();
+
+    const btn = document.createElement('button');
+    btn.id = 'pg-compare-btn';
+    Object.assign(btn.style, {
+      position: 'fixed', bottom: '24px', left: '24px', zIndex: '2147483647',
+      padding: '10px 20px', background: '#6200ea', color: '#fff',
+      border: 'none', borderRadius: '20px', fontSize: '13px', fontWeight: '500',
+      cursor: 'pointer', boxShadow: '0 2px 10px rgba(0,0,0,.3)',
+      fontFamily: '"Google Sans",sans-serif', transition: 'background .15s'
+    });
+    btn.textContent = '⚖️ 모델 비교';
+    btn.onmouseover = () => { btn.style.background = '#4a00b0'; };
+    btn.onmouseout  = () => { btn.style.background = '#6200ea'; };
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      btn.textContent = '⏳ 비교 중...';
+      startModelComparison(body, metadata);
+    });
+    document.body.appendChild(btn);
+  }
+
+  function startModelComparison(body, metadata) {
+    if (!isExtensionValid()) return;
+    try {
+      chrome.runtime.sendMessage(
+        { type: 'COMPARE_MODELS', payload: { body, metadata } },
+        (response) => {
+          document.getElementById('pg-compare-btn')?.remove();
+          if (!isExtensionValid() || chrome.runtime.lastError) return;
+          if (!response?.ok) return;
+          showComparisonPanel(response.comparison, metadata);
+        }
+      );
+    } catch (_) {}
+  }
+
+  function showComparisonPanel(comparison, metadata) {
+    document.getElementById('pg-compare-root')?.remove();
+
+    const dk = currentTheme === 'dark';
+    const T_bg     = dk ? '#1e1e1e' : '#fff';
+    const T_border = dk ? '#3c3c3c' : '#e8eaed';
+    const T_text   = dk ? '#e8eaed' : '#202124';
+    const T_text2  = dk ? '#9aa0a6' : '#5f6368';
+
+    const MODEL_LABELS = {
+      groq  : 'Groq (LLaMA)',
+      gpt   : 'GPT',
+      gemini: 'Gemini',
+      ollama: 'Ollama (Local)'
+    };
+    const RISK_COLOR = {
+      HIGH  : '#d93025',
+      MEDIUM: '#e37400',
+      LOW   : '#188038'
+    };
+
+    const rows = comparison.map(c => {
+      if (!c.ok) return `
+        <tr>
+          <td style="padding:10px 12px;font-weight:500;color:${T_text}">${esc(MODEL_LABELS[c.model] || c.model)}</td>
+          <td colspan="3" style="padding:10px 12px;color:#9aa0a6;font-size:12px">분석 실패 · ${esc(c.error || '오류')}</td>
+        </tr>`;
+      const r     = c.result;
+      const color = RISK_COLOR[r.riskLevel] || T_text2;
+      const time  = c.elapsed ? `${(c.elapsed / 1000).toFixed(1)}초` : '-';
+      return `
+        <tr style="border-top:1px solid ${T_border}">
+          <td style="padding:10px 12px;font-weight:500;color:${T_text}">${esc(MODEL_LABELS[c.model] || c.model)}</td>
+          <td style="padding:10px 12px;font-weight:700;color:${color}">${esc(r.riskLevel)}</td>
+          <td style="padding:10px 12px;color:${T_text2}">${r.confidence ?? '-'}%</td>
+          <td style="padding:10px 12px;color:${T_text2};font-size:12px">${time}</td>
+        </tr>
+        <tr style="border-top:1px solid ${T_border}">
+          <td colspan="4" style="padding:6px 12px 12px;font-size:12px;color:${T_text2};line-height:1.6">
+            ${esc(r.summary || '')}
+          </td>
+        </tr>`;
+    }).join('');
+
+    const panel = document.createElement('div');
+    panel.id = 'pg-compare-root';
+    Object.assign(panel.style, {
+      position: 'fixed', bottom: '70px', left: '16px',
+      width: '420px', maxHeight: '70vh', overflowY: 'auto',
+      background: T_bg, borderRadius: '14px', zIndex: '2147483647',
+      boxShadow: `0 4px 24px rgba(0,0,0,${dk ? '.5' : '.2'})`,
+      border: `1px solid ${T_border}`,
+      fontFamily: '"Google Sans",Roboto,sans-serif', fontSize: '13px'
+    });
+
+    panel.innerHTML = `
+      <div style="padding:14px 16px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid ${T_border}">
+        <span style="font-weight:600;color:${T_text}">⚖️ 모델 비교 결과</span>
+        <button onclick="document.getElementById('pg-compare-root')?.remove()"
+          style="background:none;border:none;cursor:pointer;color:${T_text2};font-size:16px;padding:0 4px">✕</button>
+      </div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:${dk ? '#2d2d2d' : '#f8f9fa'}">
+            <th style="padding:8px 12px;text-align:left;color:${T_text2};font-weight:500;font-size:12px">모델</th>
+            <th style="padding:8px 12px;text-align:left;color:${T_text2};font-weight:500;font-size:12px">위험도</th>
+            <th style="padding:8px 12px;text-align:left;color:${T_text2};font-weight:500;font-size:12px">신뢰도</th>
+            <th style="padding:8px 12px;text-align:left;color:${T_text2};font-weight:500;font-size:12px">응답시간</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+    document.body.appendChild(panel);
+  }
+
 
   // ══════════════════════════════════════════════
   // UI: 분석 패널

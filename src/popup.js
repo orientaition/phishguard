@@ -1,3 +1,17 @@
+// ── 안전한 탭 메시지 전송 헬퍼 ─────────────────────────────────────
+function sendToGmailTab(message, callback) {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const tab = tabs[0];
+    if (!tab?.url?.includes('mail.google.com')) return;
+    chrome.tabs.sendMessage(tab.id, message, (response) => {
+      if (chrome.runtime.lastError) {
+        return;
+      }
+      if (callback) callback(response);
+    });
+  });
+}
+
 // popup.js
 
 const modelSelect = document.getElementById('model-select');
@@ -10,6 +24,7 @@ const btnSave = document.getElementById('btn-save');
 const btnClear = document.getElementById('btn-clear');
 const btnTestApi = document.getElementById('btn-test-api');
 const btnReset = document.getElementById('btn-reset');
+const btnExportStats = document.getElementById('btn-export-stats');
 const btnLogs = document.getElementById('btn-logs');
 const btnDomains = document.getElementById('btn-domains');
 const btnToggle = document.getElementById('btn-toggle');
@@ -36,43 +51,15 @@ if (themeToggle) {
 
     chrome.storage.local.set({ theme });
 
-    chrome.tabs.query(
-      { active: true, currentWindow: true },
-      (tabs) => {
-
-        if (tabs[0]?.url?.includes('mail.google.com')) {
-
-          chrome.tabs.sendMessage(
-            tabs[0].id,
-            {
-              type: 'SET_THEME',
-              theme
-            }
-          );
-        }
-      }
-    );
+    sendToGmailTab({ type: 'SET_THEME', theme });
   });
 }
 
 // ── 분석 결과 보기 버튼 ──────────────────────────────────────────────
 if (btnToggle) {
   btnToggle.addEventListener('click', () => {
-    chrome.tabs.query(
-      { active: true, currentWindow: true },
-      (tabs) => {
-
-        if (tabs[0]?.url?.includes('mail.google.com')) {
-
-          chrome.tabs.sendMessage(
-            tabs[0].id,
-            { type: 'TOGGLE_PANEL' }
-          );
-
-          window.close();
-        }
-      }
-    );
+    sendToGmailTab({ type: 'TOGGLE_PANEL' }, () => window.close());
+    setTimeout(() => window.close(), 300);
   });
 }
 
@@ -307,6 +294,45 @@ if (btnReset) {
   });
 }
 
+// ── 통계 내보내기 ────────────────────────────────────────────────────
+if (btnExportStats) {
+  btnExportStats.addEventListener('click', () => {
+    chrome.storage.local.get(['stats', 'apiResponseLogs'], (data) => {
+      const s    = data.stats || { high: 0, medium: 0, low: 0, total: 0 };
+      const logs = (data.apiResponseLogs || [])
+        .filter(log => log.type === 'email' && log.status === 'ok')
+        .map(log => ({
+          timestamp  : new Date(log.at).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' }),
+          subject    : log.subject     || '',
+          sender     : log.sender      || '',
+          senderEmail: log.senderEmail || '',
+          model      : log.model       || '',
+          riskLevel  : log.riskLevel   || '',
+          confidence : log.confidence  ?? null,
+          durationMs : log.durationMs  ?? null
+        }));
+
+      const exported = {
+        exported_at: new Date().toISOString(),
+        stats: {
+          total : s.total  || 0,
+          high  : s.high   || 0,
+          medium: s.medium || 0,
+          low   : s.low    || 0
+        },
+        history: logs
+      };
+      const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = `phishguard-stats-${new Date().toISOString().slice(0,10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  });
+}
+
 // ── API 연결 테스트 ─────────────────────────────────────────────────
 if (btnTestApi) {
   btnTestApi.addEventListener('click', () => {
@@ -429,3 +455,54 @@ function setActiveBadge(ok) {
     badge.style.background = 'var(--yellow-bg)';
   }
 }
+
+// ── 개발자 모드 (v1.0.0 5번 클릭으로 토글) ────────────────────────
+let devClickCount = 0;
+let devClickTimer = null;
+const devToggle   = document.getElementById('dev-mode-toggle');
+const devSection  = document.getElementById('dev-section');
+const compareCount = document.getElementById('compare-count');
+
+function updateCompareCount() {
+  chrome.storage.local.get(['compareResults'], (data) => {
+    const results = data.compareResults || [];
+    if (compareCount) compareCount.textContent = `저장된 비교 결과: ${results.length}건`;
+  });
+}
+
+devToggle?.addEventListener('click', () => {
+  devClickCount++;
+  clearTimeout(devClickTimer);
+  devClickTimer = setTimeout(() => { devClickCount = 0; }, 2000);
+
+  if (devClickCount >= 5) {
+    devClickCount = 0;
+    const isVisible  = devSection?.style.display !== 'none';
+    const nextVisible = !isVisible;
+    if (devSection) devSection.style.display = nextVisible ? 'block' : 'none';
+    chrome.storage.local.set({ devMode: nextVisible });
+    if (nextVisible) updateCompareCount();
+  }
+});
+
+document.getElementById('btn-export-compare')?.addEventListener('click', () => {
+  chrome.storage.local.get(['compareResults'], (data) => {
+    const results = data.compareResults || [];
+    if (results.length === 0) {
+      alert('저장된 비교 결과가 없습니다.\n메일 분석 후 ⚖️ 모델 비교 버튼을 사용해주세요.');
+      return;
+    }
+    const exported = {
+      exported_at   : new Date().toISOString(),
+      total         : results.length,
+      compareResults: results
+    };
+    const blob = new Blob([JSON.stringify(exported, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = `phishguard-compare-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+});

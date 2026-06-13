@@ -248,3 +248,56 @@ function showStatus(message) {
     statusEl.classList.remove('show');
   }, 1800);
 }
+
+// ── JSON 내보내기 ────────────────────────────────────────────────────
+document.getElementById('export-btn')?.addEventListener('click', () => {
+  const data = {
+    exported_at: new Date().toISOString(),
+    whitelist,
+    blacklist
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href     = url;
+  a.download = `phishguard-domains-${new Date().toISOString().slice(0,10)}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+  showStatus('JSON 파일로 내보냈습니다.');
+});
+
+// ── JSON 가져오기 ────────────────────────────────────────────────────
+document.getElementById('import-input')?.addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    try {
+      const data = JSON.parse(evt.target.result);
+
+      const imported_white = normalizeList(data.whitelist || []);
+      const imported_black = normalizeList(data.blacklist || []);
+
+      if (imported_white.length === 0 && imported_black.length === 0) {
+        showStatus('가져올 항목이 없습니다.');
+        return;
+      }
+
+      whitelist = sortList([...new Set([...whitelist, ...imported_white])]);
+      blacklist = sortList([...new Set([...blacklist, ...imported_black])]);
+
+      imported_white.forEach(e => { blacklist = blacklist.filter(b => b !== e); });
+      imported_black.forEach(e => { whitelist = whitelist.filter(w => w !== e); });
+
+      saveLists(() => {
+        renderLists();
+        showStatus(`화이트 ${imported_white.length}개, 블랙 ${imported_black.length}개 가져왔습니다.`);
+      });
+    } catch (_) {
+      showStatus('올바른 JSON 파일이 아닙니다.');
+    }
+    e.target.value = '';
+  };
+  reader.readAsText(file);
+});

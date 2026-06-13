@@ -59,7 +59,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleAnalysis({ body, metadata }, stored) {
   const sys = buildSystem();
   const usr = buildPrompt(metadata, body);
-  return requestModelJson(sys, usr, stored, 'email');
+  return requestModelJson(sys, usr, stored, 'email', {
+    subject    : metadata?.subject     || '',
+    sender     : metadata?.sender      || '',
+    senderEmail: metadata?.senderEmail || ''
+  });
 }
 
 async function handleMetadataAnalysis({ metadata, preRisk }, stored) {
@@ -116,7 +120,7 @@ async function requestModelJson(sys, usr, stored, expectedType, logContext = {})
         body   : JSON.stringify({
           model          : 'llama-3.3-70b-versatile',
           messages       : [{ role: 'system', content: sys }, { role: 'user', content: usr }],
-          temperature    : 0.1,
+          temperature    : 0,
           response_format: { type: 'json_object' }
         })
       });
@@ -136,7 +140,7 @@ async function requestModelJson(sys, usr, stored, expectedType, logContext = {})
         body   : JSON.stringify({
           model          : GPT_MODEL,
           messages       : [{ role: 'system', content: sys }, { role: 'user', content: usr }],
-          temperature    : 0.1,
+          temperature    : 0,
           response_format: { type: 'json_object' }
         })
       });
@@ -157,7 +161,7 @@ async function requestModelJson(sys, usr, stored, expectedType, logContext = {})
         body   : JSON.stringify({
           systemInstruction: { parts: [{ text: sys }] },
           contents         : [{ role: 'user', parts: [{ text: usr }] }],
-          generationConfig : { temperature: 0.1, responseMimeType: 'application/json' },
+          generationConfig : { temperature: 0, responseMimeType: 'application/json' },
           tools            : [{ googleSearch: {} }]
         })
       });
@@ -180,7 +184,7 @@ async function requestModelJson(sys, usr, stored, expectedType, logContext = {})
           think   : false,
           format  : 'json',
           messages: [{ role: 'system', content: sys }, { role: 'user', content: usr }],
-          options : { temperature: 0.1 }
+          options : { temperature: 0 }
         })
       });
       httpStatus = response.status;
@@ -546,6 +550,10 @@ function normalizeChecklist(checklist) {
     const item = input[index] || {};
     const text = cleanText(item.text) || template;
     const flagged = Boolean(item.flagged);
+    const rawSeverity = String(item.severity || '').toLowerCase();
+    const severity = flagged
+      ? (['medium', 'high'].includes(rawSeverity) ? rawSeverity : 'medium')
+      : 'low';
     const reason = cleanText(item.reason) || (
       flagged
         ? '이 항목에서 의심 요소가 확인되었습니다.'
@@ -555,6 +563,7 @@ function normalizeChecklist(checklist) {
     return {
       text: ensureNumberPrefix(text, index),
       flagged,
+      severity,
       reason
     };
   });
@@ -701,31 +710,37 @@ function buildSystem() {
     {
       "text": "1. 발신자/도메인 검증: 사용자가 확인해야 할 내용",
       "flagged": false,
+      "severity": "low",
       "reason": "이 항목의 판단 근거"
     },
     {
       "text": "2. 링크/도메인 검증: 사용자가 확인해야 할 내용",
       "flagged": false,
+      "severity": "low",
       "reason": "이 항목의 판단 근거"
     },
     {
       "text": "3. 개인정보/인증 요구: 사용자가 확인해야 할 내용",
       "flagged": false,
+      "severity": "low",
       "reason": "이 항목의 판단 근거"
     },
     {
       "text": "4. 긴급성/압박 표현: 사용자가 확인해야 할 내용",
       "flagged": false,
+      "severity": "low",
       "reason": "이 항목의 판단 근거"
     },
     {
       "text": "5. 첨부파일/외부 파일: 사용자가 확인해야 할 내용",
       "flagged": false,
+      "severity": "low",
       "reason": "이 항목의 판단 근거"
     },
     {
       "text": "6. 종합 조치: 사용자가 확인해야 할 내용",
       "flagged": false,
+      "severity": "low",
       "reason": "이 항목의 판단 근거"
     }
   ],
@@ -738,6 +753,9 @@ function buildSystem() {
 - checklist는 반드시 6개 항목을 모두 포함하세요. 항목을 생략하지 마세요.
 - checklist.text는 반드시 "1. 항목명: 내용"처럼 번호로 시작해야 합니다.
 - flagged는 해당 항목에서 위험/의심 요소가 발견된 경우에만 true입니다.
+- severity는 항목의 위험 수준입니다. "low"(안전), "medium"(주의), "high"(위험) 중 하나만 사용하세요.
+- flagged가 false이면 severity는 반드시 "low"입니다.
+- flagged가 true이면 severity는 의심 정도에 따라 "medium" 또는 "high"를 사용하세요.
 - flagged가 true인 reason에는 어떤 문구, 도메인, 요청, 발신자 정보가 왜 의심스러운지 구체적으로 작성하세요.
 - flagged가 false인 reason에는 해당 항목에서 뚜렷한 위험을 발견하지 못한 근거를 작성하세요.
 - indicators는 실제 탐지된 위협 지표가 있을 때만 번호형 배열로 작성하세요. 없으면 빈 배열 []로 두세요.
@@ -746,6 +764,23 @@ function buildSystem() {
 }
 
 function buildPrompt(metadata, body) {
+  const koreanChars   = (body.match(/[가-힣]/g) || []).length;
+  const japaneseChars = (body.match(/[぀-ヿ]/g) || []).length;
+  const chineseChars  = (body.match(/[一-鿿]/g) || []).length;
+  const totalChars    = body.replace(/\s/g, '').length || 1;
+  const koreanRatio   = koreanChars / totalChars;
+
+  let translateNote = '';
+  if (koreanRatio < 0.05) {
+    if (japaneseChars > 10) {
+      translateNote = '\n※ 이 메일은 일본어로 작성되었습니다. 본문을 한국어로 번역하여 이해한 뒤 분석하고, summary와 checklist는 반드시 한국어로 작성하세요.';
+    } else if (chineseChars > 10) {
+      translateNote = '\n※ 이 메일은 중국어로 작성되었습니다. 본문을 한국어로 번역하여 이해한 뒤 분석하고, summary와 checklist는 반드시 한국어로 작성하세요.';
+    } else {
+      translateNote = '\n※ 이 메일은 외국어로 작성되었습니다. 본문을 한국어로 번역하여 이해한 뒤 분석하고, summary와 checklist는 반드시 한국어로 작성하세요.';
+    }
+  }
+
   return `[검사 대상 메일]
 1. 제목: ${metadata.subject || '(없음)'}
 2. 발신자명: ${metadata.sender || '(없음)'}
@@ -753,6 +788,64 @@ function buildPrompt(metadata, body) {
 4. 날짜: ${metadata.date || '(없음)'}
 5. 본문:
 ${body.substring(0, 3000)}
-
+${translateNote}
 위 정보를 빠짐없이 확인한 뒤, 지정된 6개 체크리스트 JSON 템플릿으로만 응답하세요.`;
 }
+
+
+// ── 모델 비교 분석 ────────────────────────────────────────────────────
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type !== 'COMPARE_MODELS') return false;
+
+  chrome.storage.local.get(
+    ['apiKeys', 'groqApiKey', 'selectedModel'],
+    async (stored) => {
+      const { body, metadata } = message.payload;
+      const sys = buildSystem();
+      const usr = buildPrompt(metadata, body);
+
+      const apiKeys = stored.apiKeys || {};
+      const models  = [];
+      if (apiKeys.groq || stored.groqApiKey) models.push('groq');
+      if (apiKeys.gpt)                       models.push('gpt');
+      if (apiKeys.gemini)                    models.push('gemini');
+      models.push('ollama');
+
+      const results = await Promise.allSettled(
+        models.map(async (model) => {
+          const start   = Date.now();
+          const result  = await requestModelJson(sys, usr, { ...stored, selectedModel: model }, 'email');
+          const elapsed = Date.now() - start;
+          return { model, result, elapsed };
+        })
+      );
+
+      const comparison = results.map((r, i) => ({
+        model  : models[i],
+        ok     : r.status === 'fulfilled',
+        result : r.status === 'fulfilled' ? r.value.result  : null,
+        elapsed: r.status === 'fulfilled' ? r.value.elapsed : null,
+        error  : r.status === 'rejected'  ? String(r.reason) : null,
+      }));
+
+      chrome.storage.local.get(['compareResults'], (stored) => {
+        const existing = stored.compareResults || [];
+        const record = {
+          id        : Date.now(),
+          timestamp : new Date().toISOString(),
+          metadata  : {
+            subject    : message.payload.metadata?.subject     || '',
+            sender     : message.payload.metadata?.sender      || '',
+            senderEmail: message.payload.metadata?.senderEmail || ''
+          },
+          comparison
+        };
+        const updated = [record, ...existing].slice(0, 200);
+        chrome.storage.local.set({ compareResults: updated });
+      });
+
+      sendResponse({ ok: true, comparison });
+    }
+  );
+  return true;
+});

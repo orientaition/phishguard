@@ -222,10 +222,18 @@
     </div>
   </div>
 
+  <!-- 개발자 모드 영역 (숨김) -->
+  <div id="dev-section" style="display:none;padding:10px 16px;border-top:1px solid var(--border);background:var(--bg-secondary)">
+    <div class="section-label" style="margin-bottom:8px">🛠 개발자 도구</div>
+    <button class="btn-reset" id="btn-export-compare" style="width:100%">모델 비교 결과 JSON 내보내기</button>
+    <div style="font-size:11px;color:var(--text-muted);margin-top:6px;text-align:center" id="compare-count">저장된 비교 결과: 0건</div>
+  </div>
+
   <div class="footer">
-    <span class="footer-l">v1.0.0</span>
+    <span class="footer-l" title="개발자 모드" id="dev-mode-toggle" style="cursor:pointer;user-select:none">v1.0.0</span>
     <div class="footer-actions">
       <button class="btn-reset" id="btn-logs">로그</button>
+      <button class="btn-reset" id="btn-export-stats">통계 내보내기</button>
       <button class="btn-reset" id="btn-reset">통계 초기화</button>
     </div>
   </div>
